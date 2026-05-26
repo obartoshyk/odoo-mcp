@@ -1,3 +1,285 @@
-fn main() {
-    println!("Hello, world!");
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+
+use anyhow::{Context, Result};
+use clap::{Parser, Subcommand};
+use odoo_xml_rpc::{from_json, OdooClient, Value};
+use serde::Deserialize;
+
+// ── Config file ───────────────────────────────────────────────────────────────
+
+#[derive(Deserialize, Default)]
+struct Config {
+    default: Option<String>,
+    #[serde(default)]
+    connections: std::collections::HashMap<String, ConnectionConfig>,
+}
+
+#[derive(Deserialize, Default, Clone)]
+struct ConnectionConfig {
+    url: Option<String>,
+    db: Option<String>,
+    username: Option<String>,
+    password: Option<String>,
+    cert: Option<String>,
+    key: Option<String>,
+}
+
+fn default_config_path() -> PathBuf {
+    dirs_next()
+        .map(|d| d.join("odoo-xml-rpc").join("config.yaml"))
+        .unwrap_or_else(|| PathBuf::from("odoo-xml-rpc.yaml"))
+}
+
+/// Returns the user's config directory (~/.config on Linux/macOS, %APPDATA% on Windows).
+fn dirs_next() -> Option<PathBuf> {
+    // Use $XDG_CONFIG_HOME if set, otherwise ~/.config
+    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+        return Some(PathBuf::from(xdg));
+    }
+    dirs_home().map(|h| h.join(".config"))
+}
+
+fn dirs_home() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+}
+
+fn load_config(path: Option<&PathBuf>) -> Result<Config> {
+    let resolved = path.cloned().unwrap_or_else(default_config_path);
+    if !resolved.exists() {
+        return Ok(Config::default());
+    }
+    let text = std::fs::read_to_string(&resolved)
+        .with_context(|| format!("Cannot read config: {}", resolved.display()))?;
+    serde_yaml::from_str(&text)
+        .with_context(|| format!("Invalid YAML in {}", resolved.display()))
+}
+
+// ── CLI ───────────────────────────────────────────────────────────────────────
+
+/// Odoo XML-RPC CLI connector.
+///
+/// Connection parameters are resolved in priority order:
+///   1. CLI flag
+///   2. Environment variable (ODOO_URL, ODOO_DB, ODOO_USERNAME, ODOO_PASSWORD, ODOO_CERT, ODOO_KEY)
+///   3. Config file profile (~/.config/odoo-xml-rpc/config.yaml)
+#[derive(Parser)]
+#[command(name = "odoo-xml-rpc", version)]
+struct Cli {
+    /// Path to YAML config file (default: ~/.config/odoo-xml-rpc/config.yaml)
+    #[arg(long, env = "ODOO_CONFIG")]
+    config: Option<PathBuf>,
+
+    /// Connection profile name from config file (uses `default:` key if omitted)
+    #[arg(long, env = "ODOO_PROFILE")]
+    profile: Option<String>,
+
+    /// Odoo base URL, e.g. https://odoo.example.com
+    #[arg(long, env = "ODOO_URL")]
+    url: Option<String>,
+
+    /// Database name
+    #[arg(long, env = "ODOO_DB")]
+    db: Option<String>,
+
+    /// Login username
+    #[arg(long, env = "ODOO_USERNAME")]
+    username: Option<String>,
+
+    /// Password or API key
+    #[arg(long, env = "ODOO_PASSWORD")]
+    password: Option<String>,
+
+    /// mTLS client certificate (.crt / .pem)
+    #[arg(long, env = "ODOO_CERT")]
+    cert: Option<String>,
+
+    /// mTLS client private key (.key / .pem)
+    #[arg(long, env = "ODOO_KEY")]
+    key: Option<String>,
+
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Authenticate and print the uid (smoke-test)
+    Auth,
+
+    /// search_read shortcut — most common query pattern
+    SearchRead {
+        /// Model name, e.g. account.move
+        #[arg(long)]
+        model: String,
+
+        /// Domain as JSON, e.g. '[["state","=","posted"]]'
+        #[arg(long, default_value = "[]")]
+        domain: String,
+
+        /// Fields to return (comma-separated)
+        #[arg(long, value_delimiter = ',', default_value = "id,name")]
+        fields: Vec<String>,
+
+        /// Maximum number of records
+        #[arg(long)]
+        limit: Option<usize>,
+
+        /// Number of records to skip
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
+
+        /// Sort order, e.g. "id desc"
+        #[arg(long)]
+        order: Option<String>,
+    },
+
+    /// Raw execute_kw — full flexibility for any model/method
+    ExecuteKw {
+        /// Model name
+        #[arg(long)]
+        model: String,
+
+        /// Method name, e.g. write, create, search_read
+        #[arg(long)]
+        method: String,
+
+        /// Positional args as a JSON array, e.g. '[[1,2,3]]'
+        #[arg(long, default_value = "[]")]
+        args: String,
+
+        /// Keyword args as a JSON object, e.g. '{"context":{"active_test":false}}'
+        #[arg(long, default_value = "{}")]
+        kwargs: String,
+    },
+}
+
+// ── Merge helpers ─────────────────────────────────────────────────────────────
+
+/// Merge CLI/env value with config file value. CLI wins.
+fn resolve(cli: Option<String>, cfg: Option<String>) -> Option<String> {
+    cli.or(cfg)
+}
+
+fn require(value: Option<String>, name: &str) -> Result<String> {
+    value.with_context(|| {
+        format!(
+            "Missing required parameter: --{name} / ODOO_{} / config file",
+            name.to_uppercase().replace('-', "_")
+        )
+    })
+}
+
+// ── HTTP client ───────────────────────────────────────────────────────────────
+
+fn build_http_client(cert: Option<&str>, key: Option<&str>) -> Result<reqwest::blocking::Client> {
+    let mut builder = reqwest::blocking::ClientBuilder::new()
+        .timeout(std::time::Duration::from_secs(60));
+
+    if let (Some(cert_path), Some(key_path)) = (cert, key) {
+        let cert_pem =
+            std::fs::read(cert_path).with_context(|| format!("Cannot read cert: {cert_path}"))?;
+        let key_pem =
+            std::fs::read(key_path).with_context(|| format!("Cannot read key: {key_path}"))?;
+        // rustls expects cert + key concatenated in a single PEM buffer
+        let mut pem = cert_pem;
+        pem.extend_from_slice(&key_pem);
+        let identity = reqwest::Identity::from_pem(&pem)
+            .context("Failed to build mTLS identity from cert+key")?;
+        builder = builder.identity(identity);
+    }
+
+    builder.build().context("Failed to build HTTP client")
+}
+
+// ── Entry point ───────────────────────────────────────────────────────────────
+
+fn main() -> Result<()> {
+    let cli = Cli::parse();
+
+    // Load config file (silently absent = empty config).
+    let config = load_config(cli.config.as_ref())?;
+
+    // Pick the connection profile.
+    let profile_name = cli.profile
+        .as_deref()
+        .or(config.default.as_deref())
+        .unwrap_or("default");
+    let cfg_conn = config
+        .connections
+        .get(profile_name)
+        .cloned()
+        .unwrap_or_default();
+
+    // Merge: CLI/env > config file.
+    let url      = require(resolve(cli.url,      cfg_conn.url),      "url")?;
+    let db       = resolve(cli.db,       cfg_conn.db)      .unwrap_or_else(|| "odoo".to_string());
+    let username = resolve(cli.username, cfg_conn.username) .unwrap_or_else(|| "admin".to_string());
+    let password = require(resolve(cli.password, cfg_conn.password), "password")?;
+    let cert     = resolve(cli.cert,     cfg_conn.cert);
+    let key      = resolve(cli.key,      cfg_conn.key);
+
+    let http = build_http_client(cert.as_deref(), key.as_deref())?;
+    let mut odoo = OdooClient::new(&url, &db, &password, http);
+    let uid = odoo.authenticate(&username)?;
+
+    match cli.command {
+        Command::Auth => {
+            let out = serde_json::json!({
+                "uid": uid,
+                "db": db,
+                "url": url,
+                "profile": profile_name,
+            });
+            println!("{}", serde_json::to_string_pretty(&out)?);
+        }
+
+        Command::SearchRead { model, domain, fields, limit, offset, order } => {
+            let domain_json: serde_json::Value = serde_json::from_str(&domain)
+                .with_context(|| format!("Invalid domain JSON: {domain}"))?;
+
+            let mut kwargs: BTreeMap<String, Value> = BTreeMap::new();
+            kwargs.insert("domain".to_string(), from_json(&domain_json));
+            kwargs.insert(
+                "fields".to_string(),
+                Value::Array(fields.into_iter().map(Value::String).collect()),
+            );
+            if let Some(lim) = limit {
+                kwargs.insert("limit".to_string(), Value::Int(lim as i64));
+            }
+            if offset > 0 {
+                kwargs.insert("offset".to_string(), Value::Int(offset as i64));
+            }
+            if let Some(ord) = order {
+                kwargs.insert("order".to_string(), Value::String(ord));
+            }
+
+            let result = odoo.execute_kw(
+                &model,
+                "search_read",
+                Value::Array(vec![]),
+                Value::Struct(kwargs),
+            )?;
+            println!("{}", serde_json::to_string_pretty(&result.to_json())?);
+        }
+
+        Command::ExecuteKw { model, method, args, kwargs } => {
+            let args_json: serde_json::Value = serde_json::from_str(&args)
+                .with_context(|| format!("Invalid args JSON: {args}"))?;
+            let kwargs_json: serde_json::Value = serde_json::from_str(&kwargs)
+                .with_context(|| format!("Invalid kwargs JSON: {kwargs}"))?;
+
+            let result = odoo.execute_kw(
+                &model,
+                &method,
+                from_json(&args_json),
+                from_json(&kwargs_json),
+            )?;
+            println!("{}", serde_json::to_string_pretty(&result.to_json())?);
+        }
+    }
+
+    Ok(())
 }

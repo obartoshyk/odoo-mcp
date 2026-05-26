@@ -1,0 +1,17 @@
+default: local
+
+connections:
+  local:
+    url: http://localhost:8069
+    db: odoo
+    username: admin
+    password: admin
+
+  production:
+    url: https://odoo.example.com
+    db: odoo
+    username: admin
+    password: "your-api-key-or-password"
+    # mTLS (optional)
+    # cert: /path/to/client.crt
+    # key: /path/to/client.key
