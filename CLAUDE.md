@@ -217,7 +217,7 @@ odoo-claude-mcp --ext-url https://ext-odoo.gurtam.team --ext \
 
 ### `update-sources` — pull git source trees
 
-Pull or clone all sources configured in the active profile. Runs `git fetch + checkout + reset --hard`. Does not require Odoo credentials.
+Pull or clone all sources configured in the active profile. Fetch + hard reset to `origin/<branch>`. Does not require Odoo credentials. Does **not** require system `git` — uses the built-in [gitoxide](https://github.com/Byron/gitoxide) library.
 
 ```bash
 odoo-claude-mcp --profile sales update-sources
@@ -492,7 +492,7 @@ odoo_search_source(query="agreement_currency_id", context=3)
 
 #### `odoo_update_sources`
 
-Pull / clone all configured source repos (`git fetch + reset --hard`). Call this when you need fresh code.
+Pull / clone all configured source repos (fetch + hard reset to `origin/<branch>`). Call this when you need fresh code. Does not require system `git` — uses the built-in gitoxide library.
 
 ```
 odoo_update_sources()
@@ -534,15 +534,16 @@ odoo_execute_kw(model="gt.billing.order", method="action_confirm", args="[[42]]"
 | `src/lib.rs` | `OdooClient`: JSON-RPC auth/execute_kw, direct HTTP |
 | `src/main.rs` | CLI: `auth`, `search-read`, `execute-kw`, `http`, `serve`, `update-sources` |
 | `src/mcp.rs` | MCP server: JSON-RPC 2.0 over stdio, tool dispatch |
-| `src/sources.rs` | Git source management, file walker, addon/model introspection |
+| `src/sources.rs` | Git source management (gitoxide), file walker, addon/model introspection |
 
-JSON-RPC over `/jsonrpc` endpoint (no XML-RPC). TLS via `rustls` (no system OpenSSL needed, works on Windows).
+JSON-RPC over `/jsonrpc` endpoint (no XML-RPC). TLS via `rustls` (no system OpenSSL needed, works on Windows). Git via `gix` (no system git needed, works on Windows).
 
 ## Dependencies
 
 | Crate | Purpose |
 |-------|---------|
 | `reqwest` (blocking + rustls-tls + json) | HTTP with mTLS and JSON body |
+| `gix` (blocking-http-transport-reqwest-rust-tls + worktree-mutation) | Pure-Rust git: clone, fetch, hard reset, SSH key + HTTPS token auth |
 | `serde` + `serde_yaml` | Config deserialization |
 | `serde_json` | JSON-RPC, output, and MCP protocol |
 | `clap` (derive + env) | CLI |
