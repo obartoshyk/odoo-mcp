@@ -5,7 +5,7 @@ use anyhow::{bail, Context, Result};
 use serde_json::{json, Value as Json};
 
 use odoo_claude_mcp::{from_json, OdooClient, Value};
-use crate::sources::{self, SourceConfig};
+use crate::sources::{self, SourceConfig, search_source};
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
@@ -223,6 +223,34 @@ fn tools_schema() -> Json {
             }
         },
         {
+            "name": "odoo_search_source",
+            "description": "Search for any string across all Python source files in the configured git trees. Use to find business logic, methods, field usages, routes, cron jobs, constraints — anything in the codebase. Returns matching lines with context.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Case-sensitive substring to search for, e.g. \"def action_post\", \"@http.route\", \"agreement_currency_id\", \"class GtBilling\""
+                    },
+                    "path_filter": {
+                        "type": "string",
+                        "description": "Optional substring the file path must contain to restrict search scope, e.g. \"gt_billing\" or \"account\" or \"controllers\""
+                    },
+                    "context": {
+                        "type": "integer",
+                        "description": "Number of lines of context to show before and after each match",
+                        "default": 5
+                    },
+                    "max_matches": {
+                        "type": "integer",
+                        "description": "Maximum number of matches to return",
+                        "default": 30
+                    }
+                },
+                "required": ["query"]
+            }
+        },
+        {
             "name": "odoo_update_sources",
             "description": "Pull / clone all configured git source repositories (git fetch + reset --hard to origin branch). Use when you need fresh source code before inspecting models.",
             "inputSchema": {
@@ -241,6 +269,7 @@ fn call_tool(odoo: &OdooClient, sources: &[SourceConfig], name: &str, args: &Jso
         "odoo_execute_kw"     => tool_execute_kw(odoo, args),
         "odoo_http"           => tool_http(odoo, args),
         "odoo_model_source"   => tool_model_source(sources, args),
+        "odoo_search_source"  => tool_search_source(sources, args),
         "odoo_update_sources" => tool_update_sources(sources),
         other => bail!("Unknown tool: {other}"),
     }
@@ -323,6 +352,14 @@ fn tool_http(odoo: &OdooClient, args: &Json) -> Result<String> {
 fn tool_model_source(sources: &[SourceConfig], args: &Json) -> Result<String> {
     let model = args["model"].as_str().context("missing field: model")?;
     sources::find_model_source(model, sources)
+}
+
+fn tool_search_source(sources: &[SourceConfig], args: &Json) -> Result<String> {
+    let query       = args["query"].as_str().context("missing field: query")?;
+    let path_filter = args["path_filter"].as_str();
+    let context     = args["context"].as_u64().unwrap_or(5) as usize;
+    let max_matches = args["max_matches"].as_u64().unwrap_or(30) as usize;
+    search_source(query, path_filter, context, max_matches, sources)
 }
 
 fn tool_update_sources(sources: &[SourceConfig]) -> Result<String> {

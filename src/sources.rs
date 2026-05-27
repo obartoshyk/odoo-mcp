@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{bail, Context, Result};
@@ -31,10 +31,8 @@ pub fn update_source(src: &SourceConfig) -> Result<String> {
     let branch = src.branch.as_deref().unwrap_or("main");
 
     if path.join(".git").exists() {
-        run_git(Some(path), &["fetch", "origin"], src)
-            .context("git fetch failed")?;
-        run_git(Some(path), &["checkout", branch], src)
-            .context("git checkout failed")?;
+        run_git(Some(path), &["fetch", "origin"], src).context("git fetch failed")?;
+        run_git(Some(path), &["checkout", branch], src).context("git checkout failed")?;
         run_git(
             Some(path),
             &["reset", "--hard", &format!("origin/{branch}")],
@@ -62,13 +60,42 @@ pub fn update_all(sources: &[SourceConfig]) -> Vec<(String, Result<String>)> {
         .collect()
 }
 
+// ── File walker ───────────────────────────────────────────────────────────────
+
+const SKIP_DIRS: &[&str] = &[".git", "__pycache__", "node_modules", ".idea", ".vscode"];
+
+/// Recursively collect all `.py` files under `dir`.
+fn walk_py_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
+        if path.is_dir() {
+            if !SKIP_DIRS.contains(&name) && !name.starts_with('.') {
+                walk_py_files(&path, out);
+            }
+        } else if name.ends_with(".py") {
+            out.push(path);
+        }
+    }
+}
+
+fn collect_py_files(sources: &[SourceConfig]) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    for src in sources {
+        walk_py_files(Path::new(&src.path), &mut files);
+    }
+    files
+}
+
 // ── Model source lookup ───────────────────────────────────────────────────────
 
-/// Find and return Python source files that define or inherit `model`.
-///
-/// Searches `_name = "model"`, `_name = 'model'`, `_inherit = "model"`,
-/// `_inherit = 'model'`, and list-style `_inherit = ["model", ...]` across
-/// all configured source paths.
+/// Return Python source files that define or inherit `model`.
 pub fn find_model_source(model: &str, sources: &[SourceConfig]) -> Result<String> {
     if sources.is_empty() {
         bail!("No sources configured for this profile. Add `sources:` to config.yaml.");
@@ -76,53 +103,38 @@ pub fn find_model_source(model: &str, sources: &[SourceConfig]) -> Result<String
 
     let dq = format!("\"{model}\"");
     let sq = format!("'{model}'");
-    let source_paths: Vec<&str> = sources.iter().map(|s| s.path.as_str()).collect();
-
-    // Grep across all source trees for either quote style.
-    let mut cmd = Command::new("grep");
-    cmd.args(["-rl", "--include=*.py", "-e", &dq, "-e", &sq]);
-    cmd.args(&source_paths);
-
-    let output = cmd.output().context("grep failed — is grep installed?")?;
-    let files: Vec<&str> = std::str::from_utf8(&output.stdout)
-        .unwrap_or("")
-        .lines()
-        .filter(|l| !l.is_empty())
-        .collect();
-
-    if files.is_empty() {
-        bail!("No Python files found referencing model '{model}'");
-    }
 
     let mut out = String::new();
     let mut count = 0usize;
 
-    for file in &files {
-        let content = std::fs::read_to_string(file)
-            .with_context(|| format!("Cannot read {file}"))?;
-
+    for file in collect_py_files(sources) {
+        let Ok(content) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+        // Fast pre-filter before the detailed check.
+        if !content.contains(&dq) && !content.contains(&sq) {
+            continue;
+        }
         if !is_model_definition(&content, model) {
             continue;
         }
-
         if count > 0 {
             out.push_str("\n\n# ");
             out.push_str(&"─".repeat(72));
             out.push('\n');
         }
-        out.push_str(&format!("# {file}\n\n"));
+        out.push_str(&format!("# {}\n\n", file.display()));
         out.push_str(&content);
         count += 1;
     }
 
     if count == 0 {
-        bail!("No Odoo model class found for '{model}' (files matched but none define/inherit it)");
+        bail!("No Odoo model class found for '{model}'");
     }
-
     Ok(out)
 }
 
-/// Returns true if `content` is an Odoo model file that defines or inherits `model`.
+/// Returns true if `content` is an Odoo model file defining or inheriting `model`.
 fn is_model_definition(content: &str, model: &str) -> bool {
     let dq = format!("\"{model}\"");
     let sq = format!("'{model}'");
@@ -131,7 +143,6 @@ fn is_model_definition(content: &str, model: &str) -> bool {
         || content.contains(&format!("_name = {sq}"))
         || content.contains(&format!("_inherit = {dq}"))
         || content.contains(&format!("_inherit = {sq}"))
-        // list-style _inherit = ["model", ...] or _inherit = ['model', ...]
         || (content.contains("_inherit")
             && (content.contains(&dq) || content.contains(&sq)));
 
@@ -142,6 +153,91 @@ fn is_model_definition(content: &str, model: &str) -> bool {
     references_model && is_model_class
 }
 
+// ── General source search ─────────────────────────────────────────────────────
+
+/// Search for `query` (case-sensitive substring) across all Python source files.
+///
+/// `path_filter` — optional substring that the file path must contain
+///   (e.g. "gt_billing" to restrict to that addon).
+/// `context` — number of lines before/after each matching line.
+/// Returns at most `max_matches` results.
+pub fn search_source(
+    query: &str,
+    path_filter: Option<&str>,
+    context: usize,
+    max_matches: usize,
+    sources: &[SourceConfig],
+) -> Result<String> {
+    if sources.is_empty() {
+        bail!("No sources configured for this profile. Add `sources:` to config.yaml.");
+    }
+
+    let files = collect_py_files(sources);
+
+    let mut out = String::new();
+    let mut total = 0usize;
+    let mut truncated = false;
+
+    'files: for file in &files {
+        // Apply optional path filter.
+        if let Some(filter) = path_filter {
+            if !file.to_str().map(|s| s.contains(filter)).unwrap_or(false) {
+                continue;
+            }
+        }
+
+        let Ok(content) = std::fs::read_to_string(file) else {
+            continue;
+        };
+        if !content.contains(query) {
+            continue;
+        }
+
+        let lines: Vec<&str> = content.lines().collect();
+        let mut file_written = false;
+
+        for (i, line) in lines.iter().enumerate() {
+            if !line.contains(query) {
+                continue;
+            }
+            if total >= max_matches {
+                truncated = true;
+                break 'files;
+            }
+
+            if !file_written {
+                if !out.is_empty() {
+                    out.push_str("\n\n");
+                }
+                out.push_str(&format!("# {}\n", file.display()));
+                file_written = true;
+            }
+
+            let start = i.saturating_sub(context);
+            let end = (i + context + 1).min(lines.len());
+
+            out.push_str(&format!("  ── line {} ──\n", i + 1));
+            for (j, l) in lines[start..end].iter().enumerate() {
+                let lineno = start + j + 1;
+                let marker = if start + j == i { '>' } else { ' ' };
+                out.push_str(&format!("{marker} {lineno:5}: {l}\n"));
+            }
+
+            total += 1;
+        }
+    }
+
+    if out.is_empty() {
+        bail!("No matches found for '{query}'");
+    }
+    if truncated {
+        out.push_str(&format!(
+            "\n\n[Truncated at {max_matches} matches — use path_filter to narrow the search]"
+        ));
+    }
+    Ok(out)
+}
+
 // ── git helpers ───────────────────────────────────────────────────────────────
 
 fn run_git(work_dir: Option<&Path>, sub_args: &[&str], src: &SourceConfig) -> Result<()> {
@@ -150,15 +246,11 @@ fn run_git(work_dir: Option<&Path>, sub_args: &[&str], src: &SourceConfig) -> Re
     if let Some(dir) = work_dir {
         cmd.current_dir(dir);
     }
-
-    // -c options must come before the subcommand.
     if let Some(token) = &src.token {
         cmd.arg("-c")
             .arg(format!("http.extraHeader=Authorization: Bearer {token}"));
     }
-
     cmd.args(sub_args);
-
     if let Some(key) = &src.ssh_key {
         cmd.env(
             "GIT_SSH_COMMAND",
@@ -177,6 +269,5 @@ fn run_git(work_dir: Option<&Path>, sub_args: &[&str], src: &SourceConfig) -> Re
             String::from_utf8_lossy(&out.stderr).trim()
         );
     }
-
     Ok(())
 }
