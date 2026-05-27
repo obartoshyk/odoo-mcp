@@ -95,7 +95,21 @@ odoo-claude-mcp --profile sales auth
 # → {"uid": 42, "db": "gurtam", "url": "https://...", "profile": "sales"}
 ```
 
-### `search-read` — query records
+### `search` — return record IDs
+
+```bash
+odoo-claude-mcp search --model res.partner --domain '[["is_company","=",true]]' --limit 10
+# → [4426, 17534, 17537, ...]
+```
+
+### `search-count` — count matching records
+
+```bash
+odoo-claude-mcp search-count --model res.partner --domain '[["is_company","=",true]]'
+# → 7239
+```
+
+### `search-read` — query records with fields
 
 ```bash
 # Last 10 posted invoices
@@ -111,6 +125,29 @@ odoo-claude-mcp search-read \
   --model res.partner \
   --domain '[["email","=",false],["is_company","=",true]]' \
   --fields id,name,phone
+```
+
+### `read` — read records by IDs
+
+```bash
+odoo-claude-mcp read \
+  --model account.move \
+  --ids '[1070023,1070024]' \
+  --fields id,name,amount_total,state
+```
+
+### `fields-get` — field definitions for a model
+
+```bash
+# All fields (type, label, required, readonly, relation)
+odoo-claude-mcp fields-get --model account.move
+
+# Specific fields only
+odoo-claude-mcp fields-get --model account.move --fields name,partner_id,amount_total
+
+# Custom attributes
+odoo-claude-mcp fields-get --model account.move \
+  --attributes string,type,required,readonly,relation,help
 ```
 
 ### `execute-kw` — any model method
@@ -240,6 +277,37 @@ Windows: `%APPDATA%\Claude\claude_desktop_config.json`
 
 ### Odoo data tools
 
+#### `odoo_search`
+
+Return IDs of records matching a domain. Use when you only need IDs, not field values.
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `model` | yes | Model technical name |
+| `domain` | no | JSON domain (default: `[]`) |
+| `limit` | no | Max IDs to return |
+| `offset` | no | Records to skip |
+| `order` | no | Sort, e.g. `id desc` |
+
+```
+odoo_search(model="res.partner", domain='[["is_company","=",true]]', limit=10)
+# → [4426, 17534, 17537, ...]
+```
+
+#### `odoo_search_count`
+
+Return the number of records matching a domain.
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `model` | yes | Model technical name |
+| `domain` | no | JSON domain (default: `[]`) |
+
+```
+odoo_search_count(model="res.partner", domain='[["is_company","=",true]]')
+# → 7239
+```
+
 #### `odoo_search_read`
 
 Search and read records from any Odoo model.
@@ -264,6 +332,38 @@ odoo_search_read(
 )
 ```
 
+#### `odoo_read`
+
+Read specific records by IDs. Use when you already have IDs.
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `model` | yes | Model technical name |
+| `ids` | yes | Record IDs as JSON array, e.g. `[1,2,3]` |
+| `fields` | no | Comma-separated fields (default: `id,name`) |
+
+```
+odoo_read(model="account.move", ids="[1070023]", fields="id,name,invoice_line_ids,amount_total")
+```
+
+#### `odoo_fields_get`
+
+Return field definitions for a model: type, label, required, readonly, relation target. Use this to discover available fields before building queries.
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `model` | yes | Model technical name |
+| `fields` | no | Comma-separated field names to filter (omit for all fields) |
+| `attributes` | no | Attributes to include (default: `string,type,required,readonly,relation`) |
+
+```
+# Discover all fields on account.move
+odoo_fields_get(model="account.move")
+
+# Check specific fields
+odoo_fields_get(model="account.move", fields="partner_id,invoice_line_ids,amount_total")
+```
+
 #### `odoo_execute_kw`
 
 Call any method on an Odoo model.
@@ -276,16 +376,11 @@ Call any method on an Odoo model.
 | `kwargs` | no | Keyword args as JSON object (default: `{}`) |
 
 ```
-# Read invoice line details
-odoo_execute_kw(
-  model="account.move.line",
-  method="read",
-  args="[[5213812]]",
-  kwargs='{"fields":["name","quantity","price_unit","price_subtotal","tax_ids"]}'
-)
-
 # Post an invoice
 odoo_execute_kw(model="account.move", method="action_post", args="[[1070023]]")
+
+# Reset to draft
+odoo_execute_kw(model="account.move", method="button_draft", args="[[1070023]]")
 ```
 
 #### `odoo_http`
