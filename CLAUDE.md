@@ -4,7 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-Odoo XML-RPC CLI connector. Outputs JSON to stdout. Reads credentials from a YAML config file, env vars, or CLI flags (in that priority order, CLI wins). Supports mTLS (client cert+key).
+Odoo CLI + MCP server. Two roles in one binary:
+
+- **CLI** — query Odoo from the terminal via JSON-RPC (`search-read`, `execute-kw`) or raw HTTP
+- **MCP server** — expose Odoo data and source code as tools for Claude (`serve`)
+
+Reads credentials from a YAML config file, env vars, or CLI flags (priority: CLI > env > config). Supports mTLS.
 
 ## Build & Install
 
@@ -12,139 +17,196 @@ Odoo XML-RPC CLI connector. Outputs JSON to stdout. Reads credentials from a YAM
 cargo build --release
 # binary: target/release/odoo-claude-mcp
 
-# Install to ~/.cargo/bin/ (then available as `odoo-claude-mcp` anywhere):
+# Install to ~/.cargo/bin/:
 cargo install --path .
 ```
 
 ## Config file
 
-Default path (per OS):
+Default path per OS:
 
-| OS | Path |
-|----|------|
-| Linux | `~/.config/odoo-claude-mcp/config.yaml` |
-| macOS | `~/Library/Application Support/odoo-claude-mcp/config.yaml` |
+| OS      | Path |
+|---------|------|
+| Linux   | `~/.config/odoo-claude-mcp/config.yaml` |
+| macOS   | `~/Library/Application Support/odoo-claude-mcp/config.yaml` |
 | Windows | `%APPDATA%\odoo-claude-mcp\config.yaml` |
 
+Override via `--config /path/to/file.yaml` or `ODOO_CONFIG` env var.
+
 ```yaml
-default: production   # profile used when --profile is not specified
+default: sales   # profile used when --profile is omitted
 
 connections:
-  production:
+  sales:
     url: https://odoo.gurtam.team
-    db: odoo
-    username: admin
+    db: gurtam
+    username: user@example.com
     password: "secret"
-    ext_url: https://ext-odoo.gurtam.team  # optional: public URL, no auth required
-    cert: /tmp/crt/client.crt   # optional, for mTLS
-    key: /tmp/crt/client.key
+    ext_url: https://ext-odoo.gurtam.team   # public URL, no auth
+    cert: /path/to/client.crt               # mTLS (optional)
+    key:  /path/to/client.key
 
-  dev:
+    # Git source trees for odoo_model_source / odoo_search_source MCP tools.
+    # Sources are per-profile: different profiles can point to different branches.
+    sources:
+      - path: /home/user/projects/odoo/git/odoo/addons
+        origin: https://github.com/odoo/odoo.git
+        branch: "16.0"
+        update_on_serve: false      # heavy; update manually
+
+      - path: /home/user/projects/odoo/addons/gt
+        origin: git@github.com:your-org/odoo-addons.git
+        branch: main
+        ssh_key: /home/user/.ssh/id_ed25519
+        update_on_serve: true       # pull on every `serve` start
+
+      - path: /home/user/projects/odoo/addons/oca
+        origin: https://github.com/OCA/account-financial-tools.git
+        branch: "16.0"
+        # token: ghp_xxxx           # GitHub PAT for private HTTPS repos
+        update_on_serve: false
+
+  local:
     url: http://localhost:8069
     db: odoo
     username: admin
     password: admin
 ```
 
-Override path via `--config /path/to/custom.yaml` or `ODOO_CONFIG` env var.
+### Source config fields
 
-## Usage
+| Field | Default | Description |
+|-------|---------|-------------|
+| `path` | — | Local directory (will be created on clone) |
+| `origin` | — | Git remote URL (SSH or HTTPS); required for auto-clone |
+| `branch` | `main` | Branch to track |
+| `ssh_key` | — | Path to SSH private key |
+| `token` | — | Bearer token for HTTPS auth (GitHub PAT etc.) |
+| `update_on_serve` | `false` | Pull automatically when `serve` starts |
 
-Priority: **CLI flag > env var > config file**.
+---
+
+## CLI subcommands
+
+### `auth` — smoke test
 
 ```bash
-# Smoke test — prints uid, db, url
-odoo-claude-mcp auth
+odoo-claude-mcp --profile sales auth
+# → {"uid": 42, "db": "gurtam", "url": "https://...", "profile": "sales"}
+```
 
-# Use a specific profile
-odoo-claude-mcp --profile dev auth
+### `search-read` — query records
 
-# search_read
+```bash
+# Last 10 posted invoices
 odoo-claude-mcp search-read \
   --model account.move \
-  --domain '[["state","=","posted"],["partner_id","=",1234]]' \
-  --fields id,name,amount_total,payment_state \
+  --domain '[["move_type","=","out_invoice"],["state","=","posted"]]' \
+  --fields id,name,partner_id,amount_total,invoice_date,payment_state \
   --limit 10 \
   --order "id desc"
 
-# execute_kw — any model/method
+# Partners without email
+odoo-claude-mcp search-read \
+  --model res.partner \
+  --domain '[["email","=",false],["is_company","=",true]]' \
+  --fields id,name,phone
+```
+
+### `execute-kw` — any model method
+
+```bash
+# Read specific fields of one record
 odoo-claude-mcp execute-kw \
   --model account.move \
   --method read \
-  --args '[[7074]]' \
-  --kwargs '{"fields": ["name","credit","agreement_currency_id"]}'
+  --args '[[1070023]]' \
+  --kwargs '{"fields": ["name","invoice_line_ids","amount_total"]}'
 
-# All flags explicit (no config file)
-odoo-claude-mcp \
-  --url https://odoo.gurtam.team --db odoo \
-  --username admin --password $PASS \
-  --cert /tmp/crt/client.crt --key /tmp/crt/client.key \
-  search-read --model res.partner --fields id,name,email --limit 5
+# Create a record
+odoo-claude-mcp execute-kw \
+  --model res.partner \
+  --method create \
+  --args '[{"name": "Test Partner", "email": "test@example.com"}]'
+
+# Call a custom method
+odoo-claude-mcp execute-kw \
+  --model account.move \
+  --method action_post \
+  --args '[[1070023]]'
 ```
 
-### Direct HTTP (`http` subcommand)
+### `http` — direct HTTP request
 
-Bypasses XML-RPC entirely — sends a raw HTTP request to any Odoo path. Response is pretty-printed if JSON, raw text otherwise. Auth is never performed.
+Bypasses JSON-RPC. Auth is never performed. Response is pretty-printed if JSON.
 
 ```bash
-# GET any endpoint (uses mTLS client from the active profile)
+# Health check
 odoo-claude-mcp http GET /web/health
 
-# POST with a JSON body (Content-Type: application/json by default)
+# Odoo JSON-RPC web API
 odoo-claude-mcp http POST /web/dataset/call_kw \
-  --body '{"jsonrpc":"2.0","method":"call","id":1,"params":{"model":"res.partner","method":"search_read","args":[[]],"kwargs":{"fields":["id","name"],"limit":5}}}'
+  --body '{"jsonrpc":"2.0","method":"call","id":1,"params":{
+    "model":"res.partner","method":"search_read",
+    "args":[[]],"kwargs":{"fields":["id","name"],"limit":5}}}'
 
-# Custom Content-Type and extra headers
+# Custom Content-Type
 odoo-claude-mcp http POST /some/form/endpoint \
   --content-type "application/x-www-form-urlencoded" \
-  --body "param1=value1&param2=value2" \
-  --header "X-Custom-Token:abc123"
+  --body "key=value"
 
-# Multiple extra headers
+# Extra headers (repeatable)
 odoo-claude-mcp http GET /api/v2/resource \
   --header "Authorization:Bearer $TOKEN" \
-  --header "Accept:application/json"
+  --header "X-Custom:value"
 ```
 
-### ext-odoo — unauthenticated public endpoints
+### `--ext` — unauthenticated public endpoints
 
-`--ext` switches the base URL to `ext_url` from the config and skips authentication entirely. Intended for endpoints exposed on the public `ext-odoo` address that require no credentials.
+Switches base URL to `ext_url` from config and skips auth entirely.
 
 ```bash
-# GET a public endpoint using ext_url from the active config profile
+# Use ext_url from active profile, no auth
 odoo-claude-mcp --ext http GET /api/v2/public/ping
 
-# POST to a public endpoint
+# With body
 odoo-claude-mcp --ext http POST /api/v2/webhook \
   --body '{"event":"test"}'
 
-# Pass ext-url inline without a config file
+# Inline ext-url without config
 odoo-claude-mcp --ext-url https://ext-odoo.gurtam.team --ext \
   http GET /api/v2/public/status
-
-# Use a non-default profile that has ext_url configured
-odoo-claude-mcp --profile staging --ext http GET /api/v2/public/info
-
-# With extra headers (e.g. a shared secret for semi-public endpoints)
-odoo-claude-mcp --ext http GET /api/v2/internal/report \
-  --header "X-Api-Key:$EXT_KEY"
 ```
 
-Env vars: `ODOO_URL`, `ODOO_DB`, `ODOO_USERNAME`, `ODOO_PASSWORD`, `ODOO_CERT`, `ODOO_KEY`, `ODOO_PROFILE`, `ODOO_CONFIG`, `ODOO_EXT_URL`.
+### `update-sources` — pull git source trees
 
-### MCP server (`serve` subcommand)
-
-Starts a JSON-RPC 2.0 MCP server over stdio for use with Claude. Authenticates at startup, then exposes three tools: `odoo_search_read`, `odoo_execute_kw`, `odoo_http`.
+Pull or clone all sources configured in the active profile. Runs `git fetch + checkout + reset --hard`. Does not require Odoo credentials.
 
 ```bash
-# Start MCP server with the sales profile
+odoo-claude-mcp --profile sales update-sources
+# ok  /home/user/projects/odoo/addons/gt (reset to origin/main)
+# ok  /home/user/projects/odoo/addons/oca (reset to origin/16.0)
+```
+
+Env vars: `ODOO_URL`, `ODOO_DB`, `ODOO_USERNAME`, `ODOO_PASSWORD`, `ODOO_CERT`, `ODOO_KEY`, `ODOO_EXT_URL`, `ODOO_PROFILE`, `ODOO_CONFIG`.
+
+---
+
+## MCP server (`serve`)
+
+Starts a JSON-RPC 2.0 MCP server over **stdio**. At startup: authenticates to Odoo, pulls sources with `update_on_serve: true`, then waits for tool calls from Claude.
+
+```bash
 odoo-claude-mcp --profile sales serve
 
-# With ext-url (no auth, public endpoints only)
+# Ext mode — no auth, public endpoints only
 odoo-claude-mcp --profile sales --ext serve
 ```
 
-**Claude Desktop config** (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS, `%APPDATA%\Claude\claude_desktop_config.json` on Windows):
+### Claude Desktop config
+
+macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`  
+Windows: `%APPDATA%\Claude\claude_desktop_config.json`
 
 ```json
 {
@@ -157,7 +219,9 @@ odoo-claude-mcp --profile sales --ext serve
 }
 ```
 
-**Claude Code config** (`.claude/settings.json` in the project or `~/.claude/settings.json` globally):
+### Claude Code config
+
+`.claude/settings.json` (project) or `~/.claude/settings.json` (global):
 
 ```json
 {
@@ -170,36 +234,222 @@ odoo-claude-mcp --profile sales --ext serve
 }
 ```
 
-**MCP tools exposed:**
+---
 
-| Tool | Description |
-|------|-------------|
-| `odoo_search_read` | Search and read records (model, domain, fields, limit, offset, order) |
-| `odoo_execute_kw` | Call any model method (create, write, unlink, custom) |
-| `odoo_http` | Direct HTTP GET/POST to any Odoo endpoint |
+## MCP tools reference
+
+### Odoo data tools
+
+#### `odoo_search_read`
+
+Search and read records from any Odoo model.
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `model` | yes | Model technical name, e.g. `account.move` |
+| `domain` | no | JSON domain, e.g. `[["state","=","posted"]]` (default: `[]`) |
+| `fields` | no | Comma-separated fields, e.g. `id,name,amount_total` (default: `id,name`) |
+| `limit` | no | Max records to return |
+| `offset` | no | Records to skip (pagination) |
+| `order` | no | Sort, e.g. `id desc` |
+
+```
+# Find last 5 unpaid invoices over €100
+odoo_search_read(
+  model="account.move",
+  domain='[["move_type","=","out_invoice"],["payment_state","=","not_paid"],["amount_total",">",100]]',
+  fields="id,name,partner_id,amount_total,invoice_date",
+  limit=5,
+  order="id desc"
+)
+```
+
+#### `odoo_execute_kw`
+
+Call any method on an Odoo model.
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `model` | yes | Model technical name |
+| `method` | yes | Method name, e.g. `write`, `create`, `unlink`, `action_post` |
+| `args` | no | Positional args as JSON array (default: `[]`) |
+| `kwargs` | no | Keyword args as JSON object (default: `{}`) |
+
+```
+# Read invoice line details
+odoo_execute_kw(
+  model="account.move.line",
+  method="read",
+  args="[[5213812]]",
+  kwargs='{"fields":["name","quantity","price_unit","price_subtotal","tax_ids"]}'
+)
+
+# Post an invoice
+odoo_execute_kw(model="account.move", method="action_post", args="[[1070023]]")
+```
+
+#### `odoo_http`
+
+Direct HTTP request to any Odoo endpoint, bypassing JSON-RPC.
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `path` | yes | Server path, e.g. `/web/health` |
+| `method` | no | HTTP method (default: `GET`) |
+| `body` | no | Request body string |
+| `content_type` | no | Content-Type (default: `application/json`) |
+
+```
+odoo_http(path="/web/health")
+odoo_http(method="POST", path="/api/v2/invoices", body='{"partner_id":123}')
+```
+
+---
+
+### Source code tools
+
+These tools read Python source files from the configured git trees. No Odoo API calls are made.
+
+#### `odoo_list_addons`
+
+List all Odoo addons found across all source trees: name, version, summary, dependencies, path. **Use this first** to understand the overall application structure.
+
+```
+odoo_list_addons()
+# → Found 1112 addons:
+# ## gt_account (Custom Account)
+#   version:  16.0.1.0.4
+#   summary:  Gurtam Account customisations
+#   depends:  gt_common, gt_agreement, account, ...
+#   path:     /home/user/projects/odoo/addons/gt/gt_account
+# ...
+```
+
+#### `odoo_addon_structure`
+
+Structural overview of a specific addon without reading full source: models defined, models extended, HTTP routes, data files, security.
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `addon` | yes | Technical addon name (directory name), e.g. `gt_billing` |
+
+```
+odoo_addon_structure(addon="gt_account")
+# → # gt_account — Custom Account
+#   version: 16.0.1.0.4
+#   depends: gt_common, gt_agreement, ...
+#
+#   ## Models defined
+#     account.reasons  (Reasons)  [Model]  — models/account_reason.py:5
+#     account.payment  (AccountPayment)  [Model]  — models/account_payment.py:5
+#
+#   ## Models inherited / extended
+#     account.move  — models/account_move.py:8
+#     account.move.line  — models/account_move.py:347
+#     ...
+#
+#   ## Data files
+#     data/account_data.xml
+#     views/account_move_views.xml
+#     ...
+```
+
+#### `odoo_model_source`
+
+Return the full Python source of all files that define or inherit a model. Shows fields, computed fields, constraints, onchange handlers, and business methods.
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `model` | yes | Model technical name, e.g. `account.move` |
+
+```
+odoo_model_source(model="gt.billing.order")
+# → # /home/user/projects/odoo/addons/gt/gt_billing/models/billing_order.py
+#   class GtBillingOrder(models.Model):
+#       _name = 'gt.billing.order'
+#       ...all fields, methods, etc...
+```
+
+#### `odoo_search_source`
+
+Search for any string across all Python source files. Use to find business logic, methods, field usages, routes, cron definitions — anything in the codebase.
+
+| Argument | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `query` | yes | — | Case-sensitive substring to find |
+| `path_filter` | no | — | File path must contain this substring (e.g. `gt_billing`) |
+| `context` | no | 5 | Lines of context around each match |
+| `max_matches` | no | 30 | Result limit |
+
+```
+# Find all places where action_post is defined
+odoo_search_source(query="def action_post", path_filter="gt_")
+
+# Find HTTP routes in a specific addon
+odoo_search_source(query="@http.route", path_filter="gt_billing")
+
+# Find all cron job definitions
+odoo_search_source(query="ir.cron", path_filter="gt_")
+
+# Find field usage across the codebase
+odoo_search_source(query="agreement_currency_id", context=3)
+```
+
+#### `odoo_update_sources`
+
+Pull / clone all configured source repos (`git fetch + reset --hard`). Call this when you need fresh code.
+
+```
+odoo_update_sources()
+# → ok  /home/user/projects/odoo/addons/gt (reset to origin/main)
+#   ok  /home/user/projects/odoo/addons/oca (reset to origin/16.0)
+```
+
+---
+
+### Typical Claude workflow
+
+```
+# 1. Understand the application
+odoo_list_addons()
+
+# 2. Drill into a specific module
+odoo_addon_structure("gt_billing")
+
+# 3. Read the model definition
+odoo_model_source("gt.billing.order")
+
+# 4. Find specific business logic
+odoo_search_source("def action_confirm", path_filter="gt_billing")
+
+# 5. Query live data
+odoo_search_read(model="gt.billing.order", domain='[["state","=","draft"]]',
+  fields="id,name,partner_id,amount_total", limit=10)
+
+# 6. Call a method
+odoo_execute_kw(model="gt.billing.order", method="action_confirm", args="[[42]]")
+```
+
+---
 
 ## Architecture
 
-- `src/lib.rs` — `Value` enum (XML-RPC types), XML serialization/deserialization (via `roxmltree`), base64 codec, `OdooClient` struct (with `http_request()` for direct HTTP)
-- `src/main.rs` — CLI (`clap` derive) with subcommands: `auth`, `search-read`, `execute-kw`, `http`, `serve`
-- `src/mcp.rs` — MCP server: JSON-RPC 2.0 over stdio, tool dispatch, protocol handshake
+| File | Purpose |
+|------|---------|
+| `src/lib.rs` | `OdooClient`: JSON-RPC auth/execute_kw, direct HTTP |
+| `src/main.rs` | CLI: `auth`, `search-read`, `execute-kw`, `http`, `serve`, `update-sources` |
+| `src/mcp.rs` | MCP server: JSON-RPC 2.0 over stdio, tool dispatch |
+| `src/sources.rs` | Git source management, file walker, addon/model introspection |
 
-XML-RPC protocol is implemented directly (no external xmlrpc crate). TLS via `rustls` (pure Rust, no system OpenSSL dependency).
-
-## Odoo XML-RPC endpoints
-
-| Endpoint | Method | Purpose |
-|----------|--------|---------|
-| `/xmlrpc/2/common` | `authenticate` | returns uid |
-| `/xmlrpc/2/object` | `execute_kw` | all ORM calls |
+JSON-RPC over `/jsonrpc` endpoint (no XML-RPC). TLS via `rustls` (no system OpenSSL needed, works on Windows).
 
 ## Dependencies
 
 | Crate | Purpose |
 |-------|---------|
-| `reqwest` (blocking + rustls-tls) | HTTP with mTLS support |
-| `roxmltree` | XML response parsing |
-| `serde` + `serde_yaml` | Config file deserialization |
-| `serde_json` | JSON output |
+| `reqwest` (blocking + rustls-tls + json) | HTTP with mTLS and JSON body |
+| `serde` + `serde_yaml` | Config deserialization |
+| `serde_json` | JSON-RPC, output, and MCP protocol |
 | `clap` (derive + env) | CLI |
+| `dirs` | OS-appropriate config path |
 | `anyhow` | Error handling |
