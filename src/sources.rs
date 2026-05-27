@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::sync::atomic::AtomicBool;
 
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
@@ -31,21 +31,11 @@ pub fn update_source(src: &SourceConfig) -> Result<String> {
     let branch = src.branch.as_deref().unwrap_or("main");
 
     if path.join(".git").exists() {
-        run_git(Some(path), &["fetch", "origin"], src).context("git fetch failed")?;
-        run_git(Some(path), &["checkout", branch], src).context("git checkout failed")?;
-        run_git(
-            Some(path),
-            &["reset", "--hard", &format!("origin/{branch}")],
-            src,
-        )
-        .context("git reset failed")?;
+        git_fetch_reset(path, branch, src)?;
         Ok(format!("{} (reset to origin/{branch})", src.path))
     } else if let Some(origin) = &src.origin {
-        let origin = origin.as_str();
-        let path_str = src.path.as_str();
-        let mut args: Vec<&str> = vec!["clone", "--single-branch", "--branch", branch];
-        args.extend_from_slice(&[origin, path_str]);
-        run_git(None, &args, src).context("git clone failed")?;
+        git_clone(origin, path, branch, src)
+            .with_context(|| format!("git clone {} failed", origin))?;
         Ok(format!("Cloned {} → {}", origin, src.path))
     } else {
         bail!("{}: not a git repo and no origin configured", src.path)
@@ -579,34 +569,165 @@ fn extract_py_str_value(s: &str) -> Option<String> {
 
 // ── git helpers ───────────────────────────────────────────────────────────────
 
-fn run_git(work_dir: Option<&Path>, sub_args: &[&str], src: &SourceConfig) -> Result<()> {
-    let mut cmd = Command::new("git");
-
-    if let Some(dir) = work_dir {
-        cmd.current_dir(dir);
+/// Build the list of in-memory config overrides for auth.
+///
+/// * SSH key  → `core.sshCommand=ssh -i <key> -o StrictHostKeyChecking=no -o BatchMode=yes`
+/// * HTTPS token → `http.extraHeader=Authorization: Bearer <token>`
+fn auth_config_overrides(src: &SourceConfig) -> Vec<String> {
+    let mut overrides = Vec::new();
+    if let Some(key) = &src.ssh_key {
+        overrides.push(format!(
+            "core.sshCommand=ssh -i {key} -o StrictHostKeyChecking=no -o BatchMode=yes"
+        ));
     }
     if let Some(token) = &src.token {
-        cmd.arg("-c")
-            .arg(format!("http.extraHeader=Authorization: Bearer {token}"));
+        overrides.push(format!(
+            "http.extraHeader=Authorization: Bearer {token}"
+        ));
     }
-    cmd.args(sub_args);
-    if let Some(key) = &src.ssh_key {
-        cmd.env(
-            "GIT_SSH_COMMAND",
-            format!("ssh -i {key} -o StrictHostKeyChecking=no -o BatchMode=yes"),
-        );
+    overrides
+}
+
+/// Clone `origin` into `path`, checking out `branch`.
+fn git_clone(origin: &str, path: &Path, branch: &str, src: &SourceConfig) -> Result<()> {
+    use gix::create;
+
+    let interrupt = AtomicBool::new(false);
+    let overrides = auth_config_overrides(src);
+
+    let mut prepare = gix::clone::PrepareFetch::new(
+        origin,
+        path,
+        create::Kind::WithWorktree,
+        create::Options::default(),
+        gix::open::Options::default(),
+    )
+    .with_context(|| format!("Failed to initialise clone of {origin}"))?
+    .with_in_memory_config_overrides(overrides)
+    .with_ref_name(Some(branch))
+    .with_context(|| format!("Invalid branch name: {branch}"))?;
+
+    let (mut checkout, _fetch_outcome) = prepare
+        .fetch_then_checkout(gix::progress::Discard, &interrupt)
+        .with_context(|| format!("Fetch from {origin} failed"))?;
+
+    let (_repo, _checkout_outcome) = checkout
+        .main_worktree(gix::progress::Discard, &interrupt)
+        .context("Worktree checkout failed after clone")?;
+
+    Ok(())
+}
+
+/// Fetch from origin and hard-reset the local `branch` to `origin/<branch>`.
+///
+/// Equivalent to:
+///   git fetch origin
+///   git checkout <branch>
+///   git reset --hard origin/<branch>
+fn git_fetch_reset(path: &Path, branch: &str, src: &SourceConfig) -> Result<()> {
+    use gix::refs::transaction::{Change, LogChange, PreviousValue, RefEdit, RefLog};
+    use gix::remote::Direction;
+
+    let interrupt = AtomicBool::new(false);
+    let overrides = auth_config_overrides(src);
+
+    // Open the repository, injecting auth overrides via the API config layer.
+    let mut repo = gix::open_opts(
+        path,
+        gix::open::Options::default().config_overrides(overrides),
+    )
+    .with_context(|| format!("Failed to open git repo at {}", path.display()))?;
+
+    // Fetch from origin.
+    {
+        let remote = repo
+            .find_remote("origin")
+            .context("No remote named 'origin' found")?;
+
+        let connection = remote
+            .connect(Direction::Fetch)
+            .context("Failed to connect to origin")?;
+
+        let fetch_prepare = connection
+            .prepare_fetch(gix::progress::Discard, Default::default())
+            .context("Failed to prepare fetch")?;
+
+        fetch_prepare
+            .receive(gix::progress::Discard, &interrupt)
+            .context("Fetch from origin failed")?;
     }
 
-    let out = cmd
-        .output()
-        .with_context(|| format!("Failed to run: git {}", sub_args.join(" ")))?;
+    // Reload the repo so the new remote-tracking refs are visible.
+    repo = gix::open_opts(path, gix::open::Options::default())
+        .context("Failed to re-open repo after fetch")?;
 
-    if !out.status.success() {
-        bail!(
-            "git {} failed:\n{}",
-            sub_args.join(" "),
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
-    }
+    // Resolve refs/remotes/origin/<branch> to an OID.
+    let remote_ref_name = format!("refs/remotes/origin/{branch}");
+    let target_oid = repo
+        .find_reference(remote_ref_name.as_str())
+        .with_context(|| format!("Remote tracking ref {remote_ref_name} not found after fetch"))?
+        .into_fully_peeled_id()
+        .with_context(|| format!("Failed to peel {remote_ref_name} to commit"))?
+        .detach();
+
+    // Update refs/heads/<branch> to the fetched OID.
+    let local_ref_name: gix::refs::FullName = format!("refs/heads/{branch}")
+        .try_into()
+        .with_context(|| format!("Invalid ref name refs/heads/{branch}"))?;
+
+    repo.edit_reference(RefEdit {
+        change: Change::Update {
+            log: LogChange {
+                mode: RefLog::AndReference,
+                force_create_reflog: false,
+                message: format!("reset: moving to origin/{branch}").into(),
+            },
+            expected: PreviousValue::Any,
+            new: gix::refs::Target::Object(target_oid),
+        },
+        name: local_ref_name,
+        deref: false,
+    })
+    .with_context(|| format!("Failed to update refs/heads/{branch}"))?;
+
+    // Hard-reset the working tree: rebuild index from the target tree and checkout.
+    let workdir = repo
+        .workdir()
+        .with_context(|| format!("Repo at {} has no workdir", path.display()))?
+        .to_owned();
+
+    // Peel the commit to its root tree.
+    let tree_id = repo
+        .find_object(target_oid)
+        .context("Failed to find target commit object")?
+        .peel_to_tree()
+        .context("Failed to peel commit to tree")?
+        .id;
+
+    // Build an in-memory index from the tree, then check out the working tree.
+    let mut index = repo
+        .index_from_tree(&tree_id)
+        .context("Failed to build index from tree")?;
+
+    let mut opts = repo
+        .checkout_options(gix::worktree::stack::state::attributes::Source::IdMapping)
+        .context("Failed to get checkout options")?;
+    // Overwrite existing files — this is the "hard" part of reset --hard.
+    opts.overwrite_existing = true;
+
+    let discard = gix::progress::Discard;
+    gix::worktree::state::checkout(
+        &mut index,
+        &workdir,
+        repo.objects.clone().into_arc()?,
+        &discard,
+        &discard,
+        &interrupt,
+        opts,
+    )
+    .context("Worktree checkout failed during hard reset")?;
+
+    index.write(Default::default()).context("Failed to write updated index")?;
+
     Ok(())
 }
