@@ -2,24 +2,18 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
 use anyhow::{bail, Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
-#[derive(Deserialize, Default, Clone)]
+#[derive(Deserialize, Serialize, Default, Clone)]
 pub struct SourceConfig {
-    /// Local path to the git working tree.
     pub path: String,
-    /// Remote origin URL (SSH or HTTPS). Required for cloning from scratch.
-    pub origin: Option<String>,
-    /// Branch to track. Defaults to "main".
-    pub branch: Option<String>,
-    /// Path to SSH private key (used with SSH origins).
-    pub ssh_key: Option<String>,
-    /// Bearer token for HTTPS origins (GitHub PAT, GitLab token, etc.).
-    pub token: Option<String>,
-    /// Pull this source automatically when `serve` starts.
-    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")] pub origin:          Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")] pub branch:          Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")] pub ssh_key:         Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")] pub token:           Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub update_on_serve: bool,
 }
 

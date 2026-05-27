@@ -6,28 +6,29 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use odoo_claude_mcp::OdooClient;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
 
 // ── Config file ───────────────────────────────────────────────────────────────
 
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Serialize, Default)]
 struct Config {
+    #[serde(skip_serializing_if = "Option::is_none")]
     default: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     connections: std::collections::HashMap<String, ConnectionConfig>,
 }
 
-#[derive(Deserialize, Default, Clone)]
+#[derive(Deserialize, Serialize, Default, Clone)]
 struct ConnectionConfig {
-    url: Option<String>,
-    ext_url: Option<String>,
-    db: Option<String>,
-    username: Option<String>,
-    password: Option<String>,
-    cert: Option<String>,
-    key: Option<String>,
-    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")] url:      Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")] ext_url:  Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")] db:       Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")] username: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")] password: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")] cert:     Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")] key:      Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     sources: Vec<sources::SourceConfig>,
 }
 
@@ -46,6 +47,17 @@ fn load_config(path: Option<&PathBuf>) -> Result<Config> {
         .with_context(|| format!("Cannot read config: {}", resolved.display()))?;
     serde_yaml::from_str(&text)
         .with_context(|| format!("Invalid YAML in {}", resolved.display()))
+}
+
+fn save_config(config: &Config, path: Option<&PathBuf>) -> Result<()> {
+    let resolved = path.cloned().unwrap_or_else(default_config_path);
+    if let Some(parent) = resolved.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("Cannot create config dir: {}", parent.display()))?;
+    }
+    let text = serde_yaml::to_string(config).context("Failed to serialize config")?;
+    std::fs::write(&resolved, text)
+        .with_context(|| format!("Cannot write config: {}", resolved.display()))
 }
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
@@ -186,6 +198,15 @@ enum Command {
         kwargs: String,
     },
 
+    /// Create initial config file from template (if not already present)
+    Init,
+
+    /// Manage connection profiles in the config file
+    Config {
+        #[command(subcommand)]
+        action: ConfigCommand,
+    },
+
     /// Start MCP server (JSON-RPC over stdio) for use with Claude
     Serve,
 
@@ -211,6 +232,36 @@ enum Command {
         /// Extra headers as KEY:VALUE (repeatable, e.g. --header X-Token:abc)
         #[arg(long = "header", value_name = "KEY:VALUE")]
         headers: Vec<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum ConfigCommand {
+    /// List all connection profiles
+    List,
+    /// Show full config with secrets masked
+    Show,
+    /// Create or update a connection profile
+    Set {
+        /// Profile name to create or update
+        #[arg(long)] profile: String,
+        #[arg(long)] url:      Option<String>,
+        #[arg(long)] db:       Option<String>,
+        #[arg(long)] username: Option<String>,
+        #[arg(long)] password: Option<String>,
+        #[arg(long)] ext_url:  Option<String>,
+        #[arg(long)] cert:     Option<String>,
+        #[arg(long)] key:      Option<String>,
+        /// Make this the default profile
+        #[arg(long)] default:  bool,
+    },
+    /// Remove a connection profile
+    Remove {
+        #[arg(long)] profile: String,
+    },
+    /// Set the default profile
+    Default {
+        #[arg(long)] profile: String,
     },
 }
 
@@ -271,10 +322,14 @@ fn main() -> Result<()> {
         .cloned()
         .unwrap_or_default();
 
-    let is_http_cmd = matches!(&cli.command, Command::Http { .. });
-    let is_source_cmd = matches!(&cli.command, Command::UpdateSources);
-    // Skip auth for --ext, direct HTTP calls, and source management.
-    let needs_auth = !cli.ext && !is_http_cmd && !is_source_cmd;
+    let is_http_cmd    = matches!(&cli.command, Command::Http { .. });
+    let is_source_cmd  = matches!(&cli.command, Command::UpdateSources);
+    let is_no_auth_cmd = matches!(
+        &cli.command,
+        Command::Init | Command::Config { .. }
+    );
+    // Skip auth for --ext, direct HTTP, source management, and config commands.
+    let needs_auth = !cli.ext && !is_http_cmd && !is_source_cmd && !is_no_auth_cmd;
 
     // Merge: CLI/env > config file.
     let url = if cli.ext {
@@ -312,6 +367,87 @@ fn main() -> Result<()> {
     };
 
     match cli.command {
+        Command::Init => {
+            let path = cli.config.clone().unwrap_or_else(default_config_path);
+            if path.exists() {
+                println!("Config already exists: {}", path.display());
+            } else {
+                let template = include_str!("../config.example.yaml");
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)
+                        .with_context(|| format!("Cannot create dir: {}", parent.display()))?;
+                }
+                std::fs::write(&path, template)
+                    .with_context(|| format!("Cannot write: {}", path.display()))?;
+                println!("Created: {}", path.display());
+            }
+            println!("Edit the config, then run: odoo-claude-mcp auth");
+        }
+
+        Command::Config { action } => {
+            let path = cli.config.clone().unwrap_or_else(default_config_path);
+            let mut cfg = load_config(Some(&path))?;
+            match action {
+                ConfigCommand::List => {
+                    if cfg.connections.is_empty() {
+                        println!("No profiles configured. Run: odoo-claude-mcp init");
+                    } else {
+                        let default = cfg.default.as_deref().unwrap_or("");
+                        let mut names: Vec<_> = cfg.connections.keys().collect();
+                        names.sort();
+                        for name in names {
+                            let conn = &cfg.connections[name];
+                            let url  = conn.url.as_deref().unwrap_or("(no url)");
+                            let mark = if name == default { "  ← default" } else { "" };
+                            println!("  {name:<20} {url}{mark}");
+                        }
+                    }
+                }
+                ConfigCommand::Show => {
+                    let mut masked = cfg;
+                    for conn in masked.connections.values_mut() {
+                        if conn.password.is_some() { conn.password = Some("***".into()); }
+                        if conn.key.is_some()      { conn.key      = Some("***".into()); }
+                        for src in &mut conn.sources {
+                            if src.token.is_some() { src.token = Some("***".into()); }
+                        }
+                    }
+                    print!("{}", serde_yaml::to_string(&masked).context("Serialization failed")?);
+                }
+                ConfigCommand::Set { profile, url, db, username, password, ext_url, cert, key, default } => {
+                    let conn = cfg.connections.entry(profile.clone()).or_default();
+                    if let Some(v) = url      { conn.url      = Some(v); }
+                    if let Some(v) = db       { conn.db       = Some(v); }
+                    if let Some(v) = username { conn.username = Some(v); }
+                    if let Some(v) = password { conn.password = Some(v); }
+                    if let Some(v) = ext_url  { conn.ext_url  = Some(v); }
+                    if let Some(v) = cert     { conn.cert     = Some(v); }
+                    if let Some(v) = key      { conn.key      = Some(v); }
+                    if default { cfg.default = Some(profile.clone()); }
+                    save_config(&cfg, Some(&path))?;
+                    println!("Saved profile '{profile}' → {}", path.display());
+                }
+                ConfigCommand::Remove { profile } => {
+                    if cfg.connections.remove(&profile).is_none() {
+                        anyhow::bail!("Profile '{profile}' not found");
+                    }
+                    if cfg.default.as_deref() == Some(profile.as_str()) {
+                        cfg.default = None;
+                    }
+                    save_config(&cfg, Some(&path))?;
+                    println!("Removed profile '{profile}'");
+                }
+                ConfigCommand::Default { profile } => {
+                    if !cfg.connections.contains_key(&profile) {
+                        anyhow::bail!("Profile '{profile}' not found");
+                    }
+                    cfg.default = Some(profile.clone());
+                    save_config(&cfg, Some(&path))?;
+                    println!("Default profile set to '{profile}'");
+                }
+            }
+        }
+
         Command::Serve => {
             mcp::run_server(odoo, sources)?;
         }
