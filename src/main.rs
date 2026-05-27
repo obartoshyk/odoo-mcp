@@ -135,6 +135,38 @@ enum Command {
         order: Option<String>,
     },
 
+    /// Return record IDs matching a domain
+    Search {
+        #[arg(long)] model: String,
+        #[arg(long, default_value = "[]")] domain: String,
+        #[arg(long)] limit: Option<usize>,
+        #[arg(long, default_value_t = 0)] offset: usize,
+        #[arg(long)] order: Option<String>,
+    },
+
+    /// Return count of records matching a domain
+    SearchCount {
+        #[arg(long)] model: String,
+        #[arg(long, default_value = "[]")] domain: String,
+    },
+
+    /// Read specific records by IDs
+    Read {
+        #[arg(long)] model: String,
+        /// Record IDs as JSON array, e.g. '[1,2,3]'
+        #[arg(long)] ids: String,
+        #[arg(long, value_delimiter = ',', default_value = "id,name")] fields: Vec<String>,
+    },
+
+    /// Return field definitions for a model
+    FieldsGet {
+        #[arg(long)] model: String,
+        /// Comma-separated field names to filter (empty = all fields)
+        #[arg(long, value_delimiter = ',')] fields: Vec<String>,
+        /// Attributes to include, e.g. string,type,required
+        #[arg(long, value_delimiter = ',', default_value = "string,type,required,readonly,relation")] attributes: Vec<String>,
+    },
+
     /// Raw execute_kw — full flexibility for any model/method
     ExecuteKw {
         /// Model name
@@ -304,6 +336,44 @@ fn main() -> Result<()> {
                 "profile": profile_name,
             });
             println!("{}", serde_json::to_string_pretty(&out)?);
+        }
+
+        Command::Search { model, domain, limit, offset, order } => {
+            let domain_val: Json = serde_json::from_str(&domain)
+                .with_context(|| format!("Invalid domain JSON: {domain}"))?;
+            let mut kwargs = serde_json::Map::new();
+            kwargs.insert("domain".into(), domain_val);
+            if let Some(lim) = limit { kwargs.insert("limit".into(), json!(lim)); }
+            if offset > 0 { kwargs.insert("offset".into(), json!(offset)); }
+            if let Some(ord) = order { kwargs.insert("order".into(), json!(ord)); }
+            let result = odoo.execute_kw(&model, "search", json!([]), Json::Object(kwargs))?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+
+        Command::SearchCount { model, domain } => {
+            let domain_val: Json = serde_json::from_str(&domain)
+                .with_context(|| format!("Invalid domain JSON: {domain}"))?;
+            let result = odoo.execute_kw(&model, "search_count", json!([domain_val]), json!({}))?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+
+        Command::Read { model, ids, fields } => {
+            let ids_val: Json = serde_json::from_str(&ids)
+                .with_context(|| format!("Invalid ids JSON: {ids}"))?;
+            let result = odoo.execute_kw(
+                &model, "read",
+                json!([ids_val]),
+                json!({"fields": fields}),
+            )?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+
+        Command::FieldsGet { model, fields, attributes } => {
+            let mut kwargs = serde_json::Map::new();
+            if !fields.is_empty() { kwargs.insert("allfields".into(), json!(fields)); }
+            kwargs.insert("attributes".into(), json!(attributes));
+            let result = odoo.execute_kw(&model, "fields_get", json!([]), Json::Object(kwargs))?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
         }
 
         Command::SearchRead { model, domain, fields, limit, offset, order } => {

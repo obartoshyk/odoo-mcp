@@ -152,6 +152,59 @@ fn tools_schema() -> Json {
             }
         },
         {
+            "name": "odoo_search",
+            "description": "Return record IDs matching a domain filter. Lighter than odoo_search_read when you only need IDs.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "model":  {"type": "string", "description": "Odoo model technical name"},
+                    "domain": {"type": "string", "description": "Domain filter as JSON array", "default": "[]"},
+                    "limit":  {"type": "integer", "description": "Maximum number of IDs to return"},
+                    "offset": {"type": "integer", "description": "Records to skip", "default": 0},
+                    "order":  {"type": "string",  "description": "Sort order, e.g. \"id desc\""}
+                },
+                "required": ["model"]
+            }
+        },
+        {
+            "name": "odoo_search_count",
+            "description": "Return the number of records matching a domain filter.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "model":  {"type": "string", "description": "Odoo model technical name"},
+                    "domain": {"type": "string", "description": "Domain filter as JSON array", "default": "[]"}
+                },
+                "required": ["model"]
+            }
+        },
+        {
+            "name": "odoo_read",
+            "description": "Read specific records by their IDs. Use when you already have IDs and need field values.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "model":  {"type": "string", "description": "Odoo model technical name"},
+                    "ids":    {"type": "string", "description": "Record IDs as JSON array, e.g. [1,2,3]"},
+                    "fields": {"type": "string", "description": "Comma-separated field names", "default": "id,name"}
+                },
+                "required": ["model", "ids"]
+            }
+        },
+        {
+            "name": "odoo_fields_get",
+            "description": "Return field definitions for an Odoo model: type, label, required, readonly, relation target. Use this to discover available fields before building queries.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "model":      {"type": "string", "description": "Odoo model technical name"},
+                    "fields":     {"type": "string", "description": "Comma-separated field names to filter (omit for all fields)"},
+                    "attributes": {"type": "string", "description": "Comma-separated attributes to include", "default": "string,type,required,readonly,relation"}
+                },
+                "required": ["model"]
+            }
+        },
+        {
             "name": "odoo_execute_kw",
             "description": "Call any method on an Odoo model via execute_kw. Use for create, write, unlink, or any custom model method.",
             "inputSchema": {
@@ -286,6 +339,10 @@ fn tools_schema() -> Json {
 
 fn call_tool(odoo: &OdooClient, sources: &[SourceConfig], name: &str, args: &Json) -> Result<String> {
     match name {
+        "odoo_search"         => tool_search(odoo, args),
+        "odoo_search_count"   => tool_search_count(odoo, args),
+        "odoo_read"           => tool_read(odoo, args),
+        "odoo_fields_get"     => tool_fields_get(odoo, args),
         "odoo_search_read"    => tool_search_read(odoo, args),
         "odoo_execute_kw"     => tool_execute_kw(odoo, args),
         "odoo_http"           => tool_http(odoo, args),
@@ -296,6 +353,68 @@ fn call_tool(odoo: &OdooClient, sources: &[SourceConfig], name: &str, args: &Jso
         "odoo_update_sources" => tool_update_sources(sources),
         other => bail!("Unknown tool: {other}"),
     }
+}
+
+fn tool_search(odoo: &OdooClient, args: &Json) -> Result<String> {
+    let model      = args["model"].as_str().context("missing field: model")?;
+    let domain_str = args["domain"].as_str().unwrap_or("[]");
+    let limit      = args["limit"].as_u64();
+    let offset     = args["offset"].as_u64().unwrap_or(0);
+    let order      = args["order"].as_str();
+
+    let domain: Json = serde_json::from_str(domain_str)
+        .with_context(|| format!("Invalid domain JSON: {domain_str}"))?;
+
+    let mut kwargs = serde_json::Map::new();
+    kwargs.insert("domain".into(), domain);
+    if let Some(lim) = limit { kwargs.insert("limit".into(), json!(lim)); }
+    if offset > 0 { kwargs.insert("offset".into(), json!(offset)); }
+    if let Some(ord) = order { kwargs.insert("order".into(), json!(ord)); }
+
+    let result = odoo.execute_kw(model, "search", json!([]), Json::Object(kwargs))?;
+    Ok(serde_json::to_string_pretty(&result)?)
+}
+
+fn tool_search_count(odoo: &OdooClient, args: &Json) -> Result<String> {
+    let model      = args["model"].as_str().context("missing field: model")?;
+    let domain_str = args["domain"].as_str().unwrap_or("[]");
+
+    let domain: Json = serde_json::from_str(domain_str)
+        .with_context(|| format!("Invalid domain JSON: {domain_str}"))?;
+
+    let result = odoo.execute_kw(model, "search_count", json!([domain]), json!({}))?;
+    Ok(serde_json::to_string_pretty(&result)?)
+}
+
+fn tool_read(odoo: &OdooClient, args: &Json) -> Result<String> {
+    let model      = args["model"].as_str().context("missing field: model")?;
+    let ids_str    = args["ids"].as_str().context("missing field: ids")?;
+    let fields_str = args["fields"].as_str().unwrap_or("id,name");
+
+    let ids: Json = serde_json::from_str(ids_str)
+        .with_context(|| format!("Invalid ids JSON: {ids_str}"))?;
+    let fields: Vec<&str> = fields_str.split(',').map(str::trim).collect();
+
+    let result = odoo.execute_kw(model, "read", json!([ids]), json!({"fields": fields}))?;
+    Ok(serde_json::to_string_pretty(&result)?)
+}
+
+fn tool_fields_get(odoo: &OdooClient, args: &Json) -> Result<String> {
+    let model          = args["model"].as_str().context("missing field: model")?;
+    let fields_str     = args["fields"].as_str().unwrap_or("");
+    let attributes_str = args["attributes"].as_str()
+        .unwrap_or("string,type,required,readonly,relation");
+
+    let attributes: Vec<&str> = attributes_str.split(',').map(str::trim).collect();
+    let mut kwargs = serde_json::Map::new();
+    if !fields_str.is_empty() {
+        let fields: Vec<&str> = fields_str.split(',').map(str::trim).collect();
+        kwargs.insert("allfields".into(), json!(fields));
+    }
+    kwargs.insert("attributes".into(), json!(attributes));
+
+    let result = odoo.execute_kw(model, "fields_get", json!([]), Json::Object(kwargs))?;
+    Ok(serde_json::to_string_pretty(&result)?)
 }
 
 fn tool_search_read(odoo: &OdooClient, args: &Json) -> Result<String> {
