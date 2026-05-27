@@ -88,6 +88,55 @@ connections:
 
 ## CLI subcommands
 
+### `init` — create initial config
+
+Creates the config file from a built-in template if it does not already exist. Safe to run on an existing setup — will not overwrite.
+
+```bash
+odoo-claude-mcp init
+# Created: ~/.config/odoo-claude-mcp/config.yaml
+# Edit the config, then run: odoo-claude-mcp auth
+
+# Already exists — no-op:
+# Config already exists: ~/.config/odoo-claude-mcp/config.yaml
+```
+
+### `config` — manage connection profiles
+
+All subcommands read/write the config file. Passwords and keys are never shown in plain text.
+
+```bash
+# List all profiles
+odoo-claude-mcp config list
+#   local                http://localhost:8069  ← default
+#   sales                https://odoo.gurtam.team
+
+# Show full config with secrets masked
+odoo-claude-mcp config show
+
+# Create or update a profile
+odoo-claude-mcp config set \
+  --profile production \
+  --url https://odoo.example.com \
+  --db mydb \
+  --username admin \
+  --password "secret" \
+  --default          # also make it the default profile
+
+# Update only some fields (others are preserved)
+odoo-claude-mcp config set --profile production --password "new-key"
+
+# Change the default profile
+odoo-claude-mcp config default --profile local
+
+# Remove a profile
+odoo-claude-mcp config remove --profile old
+```
+
+> **Note:** `sources` (git trees) are not managed via `config set` — add them manually in the YAML file, the structure is too flexible for flags.
+
+---
+
 ### `auth` — smoke test
 
 ```bash
