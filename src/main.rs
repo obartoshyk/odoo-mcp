@@ -1,4 +1,5 @@
 mod mcp;
+mod sources;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -26,6 +27,8 @@ struct ConnectionConfig {
     password: Option<String>,
     cert: Option<String>,
     key: Option<String>,
+    #[serde(default)]
+    sources: Vec<sources::SourceConfig>,
 }
 
 fn default_config_path() -> PathBuf {
@@ -154,6 +157,9 @@ enum Command {
     /// Start MCP server (JSON-RPC over stdio) for use with Claude
     Serve,
 
+    /// Pull / clone all configured source repositories
+    UpdateSources,
+
     /// Direct HTTP request to any Odoo endpoint (no XML-RPC wrapping)
     Http {
         /// HTTP method: GET, POST, PUT, PATCH, DELETE, HEAD
@@ -234,8 +240,9 @@ fn main() -> Result<()> {
         .unwrap_or_default();
 
     let is_http_cmd = matches!(&cli.command, Command::Http { .. });
-    // Skip auth for --ext mode and for direct HTTP calls; Serve always authenticates.
-    let needs_auth = !cli.ext && !is_http_cmd;
+    let is_source_cmd = matches!(&cli.command, Command::UpdateSources);
+    // Skip auth for --ext, direct HTTP calls, and source management.
+    let needs_auth = !cli.ext && !is_http_cmd && !is_source_cmd;
 
     // Merge: CLI/env > config file.
     let url = if cli.ext {
@@ -262,6 +269,7 @@ fn main() -> Result<()> {
         (db, username, password)
     };
 
+    let sources = cfg_conn.sources.clone();
     let http = build_http_client(cert.as_deref(), key.as_deref())?;
     let mut odoo = OdooClient::new(&url, &db, &password, http);
 
@@ -273,7 +281,19 @@ fn main() -> Result<()> {
 
     match cli.command {
         Command::Serve => {
-            mcp::run_server(odoo)?;
+            mcp::run_server(odoo, sources)?;
+        }
+
+        Command::UpdateSources => {
+            if sources.is_empty() {
+                println!("No sources configured for profile '{profile_name}'.");
+            }
+            for (path, result) in sources::update_all(&sources) {
+                match result {
+                    Ok(msg) => println!("ok  {msg}"),
+                    Err(e)  => eprintln!("err {path}: {e}"),
+                }
+            }
         }
 
         Command::Auth => {

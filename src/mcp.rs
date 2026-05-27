@@ -5,14 +5,29 @@ use anyhow::{bail, Context, Result};
 use serde_json::{json, Value as Json};
 
 use odoo_claude_mcp::{from_json, OdooClient, Value};
+use crate::sources::{self, SourceConfig};
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
-pub fn run_server(odoo: OdooClient) -> Result<()> {
+pub fn run_server(odoo: OdooClient, srcs: Vec<SourceConfig>) -> Result<()> {
+    // Auto-update sources marked with update_on_serve: true.
+    let to_update: Vec<_> = srcs.iter().filter(|s| s.update_on_serve).collect();
+    if !to_update.is_empty() {
+        eprintln!("odoo-claude-mcp: updating {} source(s)...", to_update.len());
+        for src in &to_update {
+            match sources::update_source(src) {
+                Ok(msg) => eprintln!("  ok  {msg}"),
+                Err(e)  => eprintln!("  err {}: {e}", src.path),
+            }
+        }
+    }
+
     eprintln!("odoo-claude-mcp: MCP server ready");
 
     let stdin = io::stdin();
     let mut stdout = io::stdout();
+    // Move sources into the server loop so tools can access them.
+    let sources = srcs;
 
     for line in stdin.lock().lines() {
         let line = line?;
@@ -56,7 +71,7 @@ pub fn run_server(odoo: OdooClient) -> Result<()> {
             "tools/call" => {
                 let name = msg["params"]["name"].as_str().unwrap_or("");
                 let args = &msg["params"]["arguments"];
-                match call_tool(&odoo, name, args) {
+                match call_tool(&odoo, &sources, name, args) {
                     Ok(text) => ok_resp(
                         id,
                         json!({"content": [{"type": "text", "text": text}]}),
@@ -192,17 +207,41 @@ fn tools_schema() -> Json {
                 },
                 "required": ["path"]
             }
+        },
+        {
+            "name": "odoo_model_source",
+            "description": "Return the Python source code (from the local git checkout) that defines or inherits an Odoo model. Use this to understand field names, types, relations, computed fields, and business logic before building queries.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "model": {
+                        "type": "string",
+                        "description": "Odoo model technical name, e.g. account.move, res.partner, gt_billing.order"
+                    }
+                },
+                "required": ["model"]
+            }
+        },
+        {
+            "name": "odoo_update_sources",
+            "description": "Pull / clone all configured git source repositories (git fetch + reset --hard to origin branch). Use when you need fresh source code before inspecting models.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
+            }
         }
     ])
 }
 
 // ── Tool dispatch ─────────────────────────────────────────────────────────────
 
-fn call_tool(odoo: &OdooClient, name: &str, args: &Json) -> Result<String> {
+fn call_tool(odoo: &OdooClient, sources: &[SourceConfig], name: &str, args: &Json) -> Result<String> {
     match name {
-        "odoo_search_read" => tool_search_read(odoo, args),
-        "odoo_execute_kw" => tool_execute_kw(odoo, args),
-        "odoo_http" => tool_http(odoo, args),
+        "odoo_search_read"    => tool_search_read(odoo, args),
+        "odoo_execute_kw"     => tool_execute_kw(odoo, args),
+        "odoo_http"           => tool_http(odoo, args),
+        "odoo_model_source"   => tool_model_source(sources, args),
+        "odoo_update_sources" => tool_update_sources(sources),
         other => bail!("Unknown tool: {other}"),
     }
 }
@@ -279,4 +318,24 @@ fn tool_http(odoo: &OdooClient, args: &Json) -> Result<String> {
         Ok(json) => Ok(serde_json::to_string_pretty(&json)?),
         Err(_) => Ok(text),
     }
+}
+
+fn tool_model_source(sources: &[SourceConfig], args: &Json) -> Result<String> {
+    let model = args["model"].as_str().context("missing field: model")?;
+    sources::find_model_source(model, sources)
+}
+
+fn tool_update_sources(sources: &[SourceConfig]) -> Result<String> {
+    if sources.is_empty() {
+        return Ok("No sources configured for this profile.".to_string());
+    }
+    let results = sources::update_all(sources);
+    let lines: Vec<String> = results
+        .into_iter()
+        .map(|(path, res)| match res {
+            Ok(msg) => format!("ok  {msg}"),
+            Err(e)  => format!("err {path}: {e}"),
+        })
+        .collect();
+    Ok(lines.join("\n"))
 }

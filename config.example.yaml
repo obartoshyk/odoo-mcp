@@ -17,3 +17,24 @@ connections:
     # mTLS (optional)
     # cert: /path/to/client.crt
     # key: /path/to/client.key
+
+    # Git source trees used by the odoo_model_source MCP tool.
+    # Claude reads Python files from these paths to understand model structure
+    # without making any Odoo API calls at query time.
+    sources:
+      - path: /opt/odoo/src/odoo/addons
+        origin: https://github.com/odoo/odoo.git
+        branch: "16.0"
+        update_on_serve: false      # Odoo core is large; update manually
+
+      - path: /opt/odoo/addons/custom
+        origin: git@github.com:your-org/odoo-addons.git
+        branch: main
+        ssh_key: /home/user/.ssh/id_ed25519
+        update_on_serve: true       # always pull custom addons on serve start
+
+      - path: /opt/odoo/addons/oca
+        origin: https://github.com/OCA/account-financial-tools.git
+        branch: "16.0"
+        # token: ghp_xxxxxxxxxxxx   # GitHub PAT for private HTTPS repos
+        update_on_serve: false
