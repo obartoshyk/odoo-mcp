@@ -15,7 +15,7 @@ Reads credentials from a YAML config file, env vars, or CLI flags (priority: CLI
 
 ```bash
 cargo build --release
-# binary: target/release/odoo-claude-mcp
+# binary: target/release/odoo-mcp
 
 # Install to ~/.cargo/bin/:
 cargo install --path .
@@ -27,9 +27,9 @@ Default path per OS:
 
 | OS      | Path |
 |---------|------|
-| Linux   | `~/.config/odoo-claude-mcp/config.yaml` |
-| macOS   | `~/Library/Application Support/odoo-claude-mcp/config.yaml` |
-| Windows | `%APPDATA%\odoo-claude-mcp\config.yaml` |
+| Linux   | `~/.config/odoo-mcp/config.yaml` |
+| macOS   | `~/Library/Application Support/odoo-mcp/config.yaml` |
+| Windows | `%APPDATA%\odoo-mcp\config.yaml` |
 
 Override via `--config /path/to/file.yaml` or `ODOO_CONFIG` env var.
 
@@ -93,12 +93,12 @@ connections:
 Creates the config file from a built-in template if it does not already exist. Safe to run on an existing setup — will not overwrite.
 
 ```bash
-odoo-claude-mcp init
-# Created: ~/.config/odoo-claude-mcp/config.yaml
-# Edit the config, then run: odoo-claude-mcp auth
+odoo-mcp init
+# Created: ~/.config/odoo-mcp/config.yaml
+# Edit the config, then run: odoo-mcp auth
 
 # Already exists — no-op:
-# Config already exists: ~/.config/odoo-claude-mcp/config.yaml
+# Config already exists: ~/.config/odoo-mcp/config.yaml
 ```
 
 ### `config` — manage connection profiles
@@ -107,15 +107,15 @@ All subcommands read/write the config file. Passwords and keys are never shown i
 
 ```bash
 # List all profiles
-odoo-claude-mcp config list
+odoo-mcp config list
 #   local                http://localhost:8069  ← default
 #   sales                https://odoo.gurtam.team
 
 # Show full config with secrets masked
-odoo-claude-mcp config show
+odoo-mcp config show
 
 # Create or update a profile
-odoo-claude-mcp config set \
+odoo-mcp config set \
   --profile production \
   --url https://odoo.example.com \
   --db mydb \
@@ -124,13 +124,13 @@ odoo-claude-mcp config set \
   --default          # also make it the default profile
 
 # Update only some fields (others are preserved)
-odoo-claude-mcp config set --profile production --password "new-key"
+odoo-mcp config set --profile production --password "new-key"
 
 # Change the default profile
-odoo-claude-mcp config default --profile local
+odoo-mcp config default --profile local
 
 # Remove a profile
-odoo-claude-mcp config remove --profile old
+odoo-mcp config remove --profile old
 ```
 
 > **Note:** `sources` (git trees) are not managed via `config set` — add them manually in the YAML file, the structure is too flexible for flags.
@@ -140,21 +140,21 @@ odoo-claude-mcp config remove --profile old
 ### `auth` — smoke test
 
 ```bash
-odoo-claude-mcp --profile sales auth
+odoo-mcp --profile sales auth
 # → {"uid": 42, "db": "gurtam", "url": "https://...", "profile": "sales"}
 ```
 
 ### `search` — return record IDs
 
 ```bash
-odoo-claude-mcp search --model res.partner --domain '[["is_company","=",true]]' --limit 10
+odoo-mcp search --model res.partner --domain '[["is_company","=",true]]' --limit 10
 # → [4426, 17534, 17537, ...]
 ```
 
 ### `search-count` — count matching records
 
 ```bash
-odoo-claude-mcp search-count --model res.partner --domain '[["is_company","=",true]]'
+odoo-mcp search-count --model res.partner --domain '[["is_company","=",true]]'
 # → 7239
 ```
 
@@ -162,7 +162,7 @@ odoo-claude-mcp search-count --model res.partner --domain '[["is_company","=",tr
 
 ```bash
 # Last 10 posted invoices
-odoo-claude-mcp search-read \
+odoo-mcp search-read \
   --model account.move \
   --domain '[["move_type","=","out_invoice"],["state","=","posted"]]' \
   --fields id,name,partner_id,amount_total,invoice_date,payment_state \
@@ -170,7 +170,7 @@ odoo-claude-mcp search-read \
   --order "id desc"
 
 # Partners without email
-odoo-claude-mcp search-read \
+odoo-mcp search-read \
   --model res.partner \
   --domain '[["email","=",false],["is_company","=",true]]' \
   --fields id,name,phone
@@ -179,7 +179,7 @@ odoo-claude-mcp search-read \
 ### `read` — read records by IDs
 
 ```bash
-odoo-claude-mcp read \
+odoo-mcp read \
   --model account.move \
   --ids '[1070023,1070024]' \
   --fields id,name,amount_total,state
@@ -189,13 +189,13 @@ odoo-claude-mcp read \
 
 ```bash
 # All fields (type, label, required, readonly, relation)
-odoo-claude-mcp fields-get --model account.move
+odoo-mcp fields-get --model account.move
 
 # Specific fields only
-odoo-claude-mcp fields-get --model account.move --fields name,partner_id,amount_total
+odoo-mcp fields-get --model account.move --fields name,partner_id,amount_total
 
 # Custom attributes
-odoo-claude-mcp fields-get --model account.move \
+odoo-mcp fields-get --model account.move \
   --attributes string,type,required,readonly,relation,help
 ```
 
@@ -203,20 +203,20 @@ odoo-claude-mcp fields-get --model account.move \
 
 ```bash
 # Read specific fields of one record
-odoo-claude-mcp execute-kw \
+odoo-mcp execute-kw \
   --model account.move \
   --method read \
   --args '[[1070023]]' \
   --kwargs '{"fields": ["name","invoice_line_ids","amount_total"]}'
 
 # Create a record
-odoo-claude-mcp execute-kw \
+odoo-mcp execute-kw \
   --model res.partner \
   --method create \
   --args '[{"name": "Test Partner", "email": "test@example.com"}]'
 
 # Call a custom method
-odoo-claude-mcp execute-kw \
+odoo-mcp execute-kw \
   --model account.move \
   --method action_post \
   --args '[[1070023]]'
@@ -228,21 +228,21 @@ Bypasses JSON-RPC. Auth is never performed. Response is pretty-printed if JSON.
 
 ```bash
 # Health check
-odoo-claude-mcp http GET /web/health
+odoo-mcp http GET /web/health
 
 # Odoo JSON-RPC web API
-odoo-claude-mcp http POST /web/dataset/call_kw \
+odoo-mcp http POST /web/dataset/call_kw \
   --body '{"jsonrpc":"2.0","method":"call","id":1,"params":{
     "model":"res.partner","method":"search_read",
     "args":[[]],"kwargs":{"fields":["id","name"],"limit":5}}}'
 
 # Custom Content-Type
-odoo-claude-mcp http POST /some/form/endpoint \
+odoo-mcp http POST /some/form/endpoint \
   --content-type "application/x-www-form-urlencoded" \
   --body "key=value"
 
 # Extra headers (repeatable)
-odoo-claude-mcp http GET /api/v2/resource \
+odoo-mcp http GET /api/v2/resource \
   --header "Authorization:Bearer $TOKEN" \
   --header "X-Custom:value"
 ```
@@ -253,14 +253,14 @@ Switches base URL to `ext_url` from config and skips auth entirely.
 
 ```bash
 # Use ext_url from active profile, no auth
-odoo-claude-mcp --ext http GET /api/v2/public/ping
+odoo-mcp --ext http GET /api/v2/public/ping
 
 # With body
-odoo-claude-mcp --ext http POST /api/v2/webhook \
+odoo-mcp --ext http POST /api/v2/webhook \
   --body '{"event":"test"}'
 
 # Inline ext-url without config
-odoo-claude-mcp --ext-url https://ext-odoo.gurtam.team --ext \
+odoo-mcp --ext-url https://ext-odoo.gurtam.team --ext \
   http GET /api/v2/public/status
 ```
 
@@ -269,7 +269,7 @@ odoo-claude-mcp --ext-url https://ext-odoo.gurtam.team --ext \
 Pull or clone all sources configured in the active profile. Fetch + hard reset to `origin/<branch>`. Does not require Odoo credentials. Does **not** require system `git` — uses the built-in [gitoxide](https://github.com/Byron/gitoxide) library.
 
 ```bash
-odoo-claude-mcp --profile sales update-sources
+odoo-mcp --profile sales update-sources
 # ok  /home/user/projects/odoo/addons/gt (reset to origin/main)
 # ok  /home/user/projects/odoo/addons/oca (reset to origin/16.0)
 ```
@@ -283,10 +283,10 @@ Env vars: `ODOO_URL`, `ODOO_DB`, `ODOO_USERNAME`, `ODOO_PASSWORD`, `ODOO_CERT`, 
 Starts a JSON-RPC 2.0 MCP server over **stdio**. At startup: authenticates to Odoo, pulls sources with `update_on_serve: true`, then waits for tool calls from Claude.
 
 ```bash
-odoo-claude-mcp --profile sales serve
+odoo-mcp --profile sales serve
 
 # Ext mode — no auth, public endpoints only
-odoo-claude-mcp --profile sales --ext serve
+odoo-mcp --profile sales --ext serve
 ```
 
 ### Claude Desktop config
@@ -298,7 +298,7 @@ Windows: `%APPDATA%\Claude\claude_desktop_config.json`
 {
   "mcpServers": {
     "odoo": {
-      "command": "odoo-claude-mcp",
+      "command": "odoo-mcp",
       "args": ["--profile", "sales", "serve"]
     }
   }
@@ -313,7 +313,7 @@ Windows: `%APPDATA%\Claude\claude_desktop_config.json`
 {
   "mcpServers": {
     "odoo": {
-      "command": "odoo-claude-mcp",
+      "command": "odoo-mcp",
       "args": ["--profile", "sales", "serve"]
     }
   }

@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use odoo_claude_mcp::OdooClient;
+use odoo_mcp::OdooClient;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
 
@@ -34,8 +34,8 @@ struct ConnectionConfig {
 
 fn default_config_path() -> PathBuf {
     dirs::config_dir()
-        .map(|d| d.join("odoo-claude-mcp").join("config.yaml"))
-        .unwrap_or_else(|| PathBuf::from("odoo-claude-mcp.yaml"))
+        .map(|d| d.join("odoo-mcp").join("config.yaml"))
+        .unwrap_or_else(|| PathBuf::from("odoo-mcp.yaml"))
 }
 
 fn load_config(path: Option<&PathBuf>) -> Result<Config> {
@@ -67,11 +67,11 @@ fn save_config(config: &Config, path: Option<&PathBuf>) -> Result<()> {
 /// Connection parameters are resolved in priority order:
 ///   1. CLI flag
 ///   2. Environment variable (ODOO_URL, ODOO_DB, ODOO_USERNAME, ODOO_PASSWORD, ODOO_CERT, ODOO_KEY)
-///   3. Config file profile (~/.config/odoo-claude-mcp/config.yaml)
+///   3. Config file profile (~/.config/odoo-mcp/config.yaml)
 #[derive(Parser)]
-#[command(name = "odoo-claude-mcp", version)]
+#[command(name = "odoo-mcp", version)]
 struct Cli {
-    /// Path to YAML config file (default: ~/.config/odoo-claude-mcp/config.yaml)
+    /// Path to YAML config file (default: ~/.config/odoo-mcp/config.yaml)
     #[arg(long, env = "ODOO_CONFIG")]
     config: Option<PathBuf>,
 
@@ -381,7 +381,7 @@ fn main() -> Result<()> {
                     .with_context(|| format!("Cannot write: {}", path.display()))?;
                 println!("Created: {}", path.display());
             }
-            println!("Edit the config, then run: odoo-claude-mcp auth");
+            println!("Edit the config, then run: odoo-mcp auth");
         }
 
         Command::Config { action } => {
@@ -390,7 +390,7 @@ fn main() -> Result<()> {
             match action {
                 ConfigCommand::List => {
                     if cfg.connections.is_empty() {
-                        println!("No profiles configured. Run: odoo-claude-mcp init");
+                        println!("No profiles configured. Run: odoo-mcp init");
                     } else {
                         let default = cfg.default.as_deref().unwrap_or("");
                         let mut names: Vec<_> = cfg.connections.keys().collect();

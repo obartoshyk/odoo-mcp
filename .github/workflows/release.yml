@@ -16,19 +16,19 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            artifact: odoo-claude-mcp
+            artifact: odoo-mcp
 
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            artifact: odoo-claude-mcp.exe
+            artifact: odoo-mcp.exe
 
           - os: macos-latest
             target: x86_64-apple-darwin
-            artifact: odoo-claude-mcp
+            artifact: odoo-mcp
 
           - os: macos-latest
             target: aarch64-apple-darwin
-            artifact: odoo-claude-mcp
+            artifact: odoo-mcp
 
     steps:
       - uses: actions/checkout@v4
@@ -44,13 +44,13 @@ jobs:
         shell: bash
         run: |
           src="target/${{ matrix.target }}/release/${{ matrix.artifact }}"
-          dst="odoo-claude-mcp-${{ matrix.target }}${{ matrix.target == 'x86_64-pc-windows-msvc' && '.exe' || '' }}"
+          dst="odoo-mcp-${{ matrix.target }}${{ matrix.target == 'x86_64-pc-windows-msvc' && '.exe' || '' }}"
           cp "$src" "$dst"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: odoo-claude-mcp-${{ matrix.target }}
-          path: odoo-claude-mcp-${{ matrix.target }}*
+          name: odoo-mcp-${{ matrix.target }}
+          path: odoo-mcp-${{ matrix.target }}*
           if-no-files-found: error
 
   release:

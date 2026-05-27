@@ -3,7 +3,7 @@ use std::io::{self, BufRead, Write};
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value as Json};
 
-use odoo_claude_mcp::OdooClient;
+use odoo_mcp::OdooClient;
 use crate::sources::{self, SourceConfig, search_source, list_addons, addon_structure};
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -12,7 +12,7 @@ pub fn run_server(odoo: OdooClient, srcs: Vec<SourceConfig>) -> Result<()> {
     // Auto-update sources marked with update_on_serve: true.
     let to_update: Vec<_> = srcs.iter().filter(|s| s.update_on_serve).collect();
     if !to_update.is_empty() {
-        eprintln!("odoo-claude-mcp: updating {} source(s)...", to_update.len());
+        eprintln!("odoo-mcp: updating {} source(s)...", to_update.len());
         for src in &to_update {
             match sources::update_source(src) {
                 Ok(msg) => eprintln!("  ok  {msg}"),
@@ -21,7 +21,7 @@ pub fn run_server(odoo: OdooClient, srcs: Vec<SourceConfig>) -> Result<()> {
         }
     }
 
-    eprintln!("odoo-claude-mcp: MCP server ready");
+    eprintln!("odoo-mcp: MCP server ready");
 
     let stdin = io::stdin();
     let mut stdout = io::stdout();
@@ -59,7 +59,7 @@ pub fn run_server(odoo: OdooClient, srcs: Vec<SourceConfig>) -> Result<()> {
                     "protocolVersion": "2024-11-05",
                     "capabilities": {"tools": {}},
                     "serverInfo": {
-                        "name": "odoo-claude-mcp",
+                        "name": "odoo-mcp",
                         "version": env!("CARGO_PKG_VERSION")
                     }
                 }),
