@@ -3,7 +3,7 @@ mod sources;
 
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use odoo_mcp::OdooClient;
 use serde::{Deserialize, Serialize};
@@ -366,6 +366,15 @@ fn ensure_session(
     Ok(sid)
 }
 
+/// Verify bytes start with %PDF; bail with a preview of the response otherwise.
+fn require_pdf(bytes: Vec<u8>) -> Result<Vec<u8>> {
+    if bytes.starts_with(b"%PDF") {
+        return Ok(bytes);
+    }
+    let preview = String::from_utf8_lossy(&bytes[..bytes.len().min(300)]);
+    bail!("Expected PDF but got:\n{preview}");
+}
+
 /// Download a report PDF with session cookie, re-authenticating once if the session expired.
 fn download_report(
     odoo: &OdooClient,
@@ -376,21 +385,21 @@ fn download_report(
     username: &str,
     password: &str,
 ) -> Result<Vec<u8>> {
-    let try_download = |session_id: &str| -> Result<Option<Vec<u8>>> {
+    let fetch = |session_id: &str| -> Result<Vec<u8>> {
         let extra = vec![("Cookie".to_string(), format!("session_id={session_id}"))];
-        let bytes = odoo.http_request_bytes("GET", path, None, "application/json", &extra)?;
-        if bytes.starts_with(b"%PDF") { Ok(Some(bytes)) } else { Ok(None) }
+        odoo.http_request_bytes("GET", path, None, "application/json", &extra)
     };
 
     let sid = ensure_session(odoo, config_path, profile, db, username, password)?;
-    if let Some(bytes) = try_download(&sid)? {
+    let bytes = fetch(&sid)?;
+    if bytes.starts_with(b"%PDF") {
         return Ok(bytes);
     }
 
     // Session was cached but expired — re-authenticate once
     let new_sid = odoo.web_authenticate(db, username, password)?;
     save_session(config_path, profile, &new_sid);
-    try_download(&new_sid)?.context("Report download returned HTML even after re-authentication")
+    require_pdf(fetch(&new_sid)?)
 }
 
 /// Extract binary bytes for --output:
@@ -712,6 +721,27 @@ fn main() -> Result<()> {
                 let bytes = odoo.http_request_bytes(
                     &method, &path, body.as_deref(), &content_type, &extra,
                 )?;
+                // If saving to a .pdf file, verify we got a real PDF.
+                // If not (session expired) — re-authenticate once and retry.
+                let is_pdf_ext = out_path.extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| e.eq_ignore_ascii_case("pdf"))
+                    .unwrap_or(false);
+                let bytes = if is_pdf_ext && !bytes.starts_with(b"%PDF") && !cli.ext {
+                    let new_sid = odoo.web_authenticate(&db, &username, &password)?;
+                    save_session(cli.config.as_ref(), profile_name, &new_sid);
+                    for (k, v) in &mut extra {
+                        if k == "Cookie" { *v = format!("session_id={new_sid}"); }
+                    }
+                    let retry = odoo.http_request_bytes(
+                        &method, &path, body.as_deref(), &content_type, &extra,
+                    )?;
+                    require_pdf(retry)?
+                } else if is_pdf_ext {
+                    require_pdf(bytes)?
+                } else {
+                    bytes
+                };
                 std::fs::write(&out_path, &bytes)
                     .with_context(|| format!("Cannot write: {}", out_path.display()))?;
                 eprintln!("Wrote {} bytes → {}", bytes.len(), out_path.display());
