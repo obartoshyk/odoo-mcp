@@ -238,6 +238,345 @@ pub fn search_source(
     Ok(out)
 }
 
+// ── Addon listing ────────────────────────────────────────────────────────────
+
+/// Find all `__manifest__.py` files across source trees.
+fn find_manifests(sources: &[SourceConfig]) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for src in sources {
+        find_manifests_in(Path::new(&src.path), &mut out);
+    }
+    out
+}
+
+fn find_manifests_in(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if !path.is_dir() || SKIP_DIRS.contains(&name) || name.starts_with('.') {
+            continue;
+        }
+        let manifest = path.join("__manifest__.py");
+        if manifest.exists() {
+            out.push(manifest);
+        } else {
+            find_manifests_in(&path, out);
+        }
+    }
+}
+
+/// Extract a single string value for `key` from manifest Python source.
+fn manifest_str(content: &str, key: &str) -> String {
+    for q in ['"', '\''] {
+        let needle = format!("{q}{key}{q}");
+        let Some(pos) = content.find(&needle) else { continue };
+        let rest = content[pos + needle.len()..].trim_start();
+        let Some(colon) = rest.find(':') else { continue };
+        let val = rest[colon + 1..].trim_start();
+        for vq in ['"', '\''] {
+            if val.starts_with(vq) {
+                let inner = &val[1..];
+                if let Some(end) = inner.find(vq) {
+                    return inner[..end].to_string();
+                }
+            }
+        }
+    }
+    String::new()
+}
+
+/// Extract a list of strings for `key` from manifest Python source.
+fn manifest_list(content: &str, key: &str) -> Vec<String> {
+    for q in ['"', '\''] {
+        let needle = format!("{q}{key}{q}");
+        let Some(pos) = content.find(&needle) else { continue };
+        let rest = &content[pos + needle.len()..];
+        let Some(bracket) = rest.find('[') else { continue };
+        let rest = &rest[bracket + 1..];
+        let Some(end) = rest.find(']') else { continue };
+        return extract_quoted_list(&rest[..end]);
+    }
+    Vec::new()
+}
+
+fn extract_quoted_list(s: &str) -> Vec<String> {
+    let mut result = Vec::new();
+    let mut rest = s;
+    while let Some(pos) = rest.find(|c| c == '\'' || c == '"') {
+        let q = rest.chars().nth(pos).unwrap();
+        let inner = &rest[pos + 1..];
+        if let Some(end) = inner.find(q) {
+            let item = inner[..end].trim().to_string();
+            if !item.is_empty() {
+                result.push(item);
+            }
+            rest = &inner[end + 1..];
+        } else {
+            break;
+        }
+    }
+    result
+}
+
+/// Return a summary of all Odoo addons found across all source trees.
+pub fn list_addons(sources: &[SourceConfig]) -> Result<String> {
+    if sources.is_empty() {
+        bail!("No sources configured for this profile. Add `sources:` to config.yaml.");
+    }
+
+    let manifests = find_manifests(sources);
+    if manifests.is_empty() {
+        bail!("No __manifest__.py files found in configured source paths.");
+    }
+
+    let mut out = format!("Found {} addons:\n\n", manifests.len());
+
+    for manifest_path in &manifests {
+        let addon_dir = manifest_path.parent().unwrap();
+        let addon_name = addon_dir.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+        let Ok(content) = std::fs::read_to_string(manifest_path) else { continue };
+
+        let name    = manifest_str(&content, "name");
+        let version = manifest_str(&content, "version");
+        let summary = {
+            let s = manifest_str(&content, "summary");
+            if s.is_empty() { manifest_str(&content, "description") } else { s }
+        };
+        let depends = manifest_list(&content, "depends");
+
+        out.push_str(&format!("## {addon_name}"));
+        if !name.is_empty() && name != addon_name {
+            out.push_str(&format!(" ({name})"));
+        }
+        out.push('\n');
+        if !version.is_empty() {
+            out.push_str(&format!("  version:  {version}\n"));
+        }
+        if !summary.is_empty() {
+            out.push_str(&format!("  summary:  {summary}\n"));
+        }
+        if !depends.is_empty() {
+            out.push_str(&format!("  depends:  {}\n", depends.join(", ")));
+        }
+        out.push_str(&format!("  path:     {}\n\n", addon_dir.display()));
+    }
+
+    Ok(out)
+}
+
+// ── Addon structure ───────────────────────────────────────────────────────────
+
+pub fn addon_structure(addon_name: &str, sources: &[SourceConfig]) -> Result<String> {
+    if sources.is_empty() {
+        bail!("No sources configured for this profile. Add `sources:` to config.yaml.");
+    }
+
+    // Find the addon directory by name.
+    let addon_dir = find_manifests(sources)
+        .into_iter()
+        .find(|m| {
+            m.parent()
+                .and_then(|p| p.file_name())
+                .and_then(|n| n.to_str())
+                .map(|n| n == addon_name)
+                .unwrap_or(false)
+        })
+        .and_then(|m| m.parent().map(|p| p.to_path_buf()))
+        .with_context(|| format!("Addon '{addon_name}' not found in configured source paths"))?;
+
+    // Parse manifest.
+    let manifest_content = std::fs::read_to_string(addon_dir.join("__manifest__.py"))
+        .unwrap_or_default();
+    let name    = manifest_str(&manifest_content, "name");
+    let version = manifest_str(&manifest_content, "version");
+    let summary = manifest_str(&manifest_content, "summary");
+    let depends = manifest_list(&manifest_content, "depends");
+    let data    = manifest_list(&manifest_content, "data");
+
+    let mut out = String::new();
+    out.push_str(&format!("# {addon_name}"));
+    if !name.is_empty() {
+        out.push_str(&format!(" — {name}"));
+    }
+    out.push('\n');
+    if !version.is_empty() {
+        out.push_str(&format!("version: {version}\n"));
+    }
+    if !summary.is_empty() {
+        out.push_str(&format!("summary: {summary}\n"));
+    }
+    if !depends.is_empty() {
+        out.push_str(&format!("depends: {}\n", depends.join(", ")));
+    }
+
+    // Scan Python files.
+    let mut py_files = Vec::new();
+    walk_py_files(&addon_dir, &mut py_files);
+
+    let mut models_defined:   Vec<String> = Vec::new();
+    let mut models_inherited: Vec<String> = Vec::new();
+    let mut controllers:      Vec<String> = Vec::new();
+
+    for file in &py_files {
+        let Ok(content) = std::fs::read_to_string(file) else { continue };
+        let rel = file.strip_prefix(&addon_dir).unwrap_or(file);
+
+        scan_models(&content, rel, &mut models_defined, &mut models_inherited);
+        scan_routes(&content, rel, &mut controllers);
+    }
+
+    // Models section.
+    if !models_defined.is_empty() {
+        out.push_str("\n## Models defined\n");
+        for m in &models_defined {
+            out.push_str(&format!("  {m}\n"));
+        }
+    }
+    if !models_inherited.is_empty() {
+        out.push_str("\n## Models inherited / extended\n");
+        // Deduplicate — same model may be extended in multiple files.
+        let mut seen = std::collections::HashSet::new();
+        for m in &models_inherited {
+            if seen.insert(m.clone()) {
+                out.push_str(&format!("  {m}\n"));
+            }
+        }
+    }
+
+    // Controllers section.
+    if !controllers.is_empty() {
+        out.push_str("\n## Controllers (HTTP routes)\n");
+        for c in &controllers {
+            out.push_str(&format!("  {c}\n"));
+        }
+    }
+
+    // Data / XML files.
+    if !data.is_empty() {
+        out.push_str("\n## Data files\n");
+        for d in &data {
+            out.push_str(&format!("  {d}\n"));
+        }
+    }
+
+    // Security files.
+    let security_dir = addon_dir.join("security");
+    if security_dir.is_dir() {
+        out.push_str("\n## Security\n");
+        if let Ok(entries) = std::fs::read_dir(&security_dir) {
+            for e in entries.flatten() {
+                let n = e.file_name();
+                out.push_str(&format!("  security/{}\n", n.to_string_lossy()));
+            }
+        }
+    }
+
+    Ok(out)
+}
+
+/// Scan a Python file for model class definitions and inheritances.
+fn scan_models(
+    content: &str,
+    rel_path: &Path,
+    defined: &mut Vec<String>,
+    inherited: &mut Vec<String>,
+) {
+    let lines: Vec<&str> = content.lines().collect();
+    for (i, line) in lines.iter().enumerate() {
+        let t = line.trim();
+
+        if t.starts_with("_name") && t.contains('=') {
+            if let Some(model_name) = extract_py_str_value(t) {
+                // Look back up to 15 lines for the class definition.
+                let class = find_class_above(&lines, i);
+                let kind  = if content.contains("TransientModel") { "Transient" } else { "Model" };
+                let entry = if let Some(cls) = class {
+                    format!("{model_name}  ({cls})  [{kind}]  — {}:{}", rel_path.display(), i + 1)
+                } else {
+                    format!("{model_name}  [{kind}]  — {}:{}", rel_path.display(), i + 1)
+                };
+                defined.push(entry);
+            }
+        }
+
+        if t.starts_with("_inherit") && t.contains('=') {
+            let after = t.splitn(2, '=').nth(1).unwrap_or("").trim();
+            let names: Vec<String> = if after.starts_with('[') {
+                extract_quoted_list(after)
+            } else {
+                extract_py_str_value(t).into_iter().collect()
+            };
+            for name in names {
+                inherited.push(format!(
+                    "{name}  — {}:{}",
+                    rel_path.display(),
+                    i + 1
+                ));
+            }
+        }
+    }
+}
+
+/// Scan a Python file for @http.route decorators.
+fn scan_routes(content: &str, rel_path: &Path, routes: &mut Vec<String>) {
+    let lines: Vec<&str> = content.lines().collect();
+    for (i, line) in lines.iter().enumerate() {
+        if !line.contains("@http.route") && !line.contains("route(") {
+            continue;
+        }
+        // Collect the route arguments (may span a couple lines).
+        let mut snippet = line.trim().to_string();
+        for extra in lines.iter().skip(i + 1).take(3) {
+            snippet.push(' ');
+            snippet.push_str(extra.trim());
+            if snippet.contains(')') {
+                break;
+            }
+        }
+        // Extract path strings from the route call.
+        let paths = extract_quoted_list(&snippet);
+        let entry = if paths.is_empty() {
+            format!("(route)  — {}:{}", rel_path.display(), i + 1)
+        } else {
+            format!("{}  — {}:{}", paths.join(", "), rel_path.display(), i + 1)
+        };
+        routes.push(entry);
+    }
+}
+
+/// Look backwards from line `i` to find a `class Foo(...)` definition.
+fn find_class_above(lines: &[&str], i: usize) -> Option<String> {
+    for j in (0..i.min(i + 1)).rev().take(20) {
+        let t = lines[j].trim();
+        if t.starts_with("class ") {
+            return Some(
+                t.trim_start_matches("class ")
+                    .split(|c| c == '(' || c == ':')
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .to_string(),
+            );
+        }
+    }
+    None
+}
+
+/// Extract a Python string value from an assignment like `_name = 'foo.bar'`.
+fn extract_py_str_value(s: &str) -> Option<String> {
+    let after = s.splitn(2, '=').nth(1)?.trim();
+    for q in ['"', '\''] {
+        if after.starts_with(q) {
+            let inner = &after[1..];
+            if let Some(end) = inner.find(q) {
+                return Some(inner[..end].to_string());
+            }
+        }
+    }
+    None
+}
+
 // ── git helpers ───────────────────────────────────────────────────────────────
 
 fn run_git(work_dir: Option<&Path>, sub_args: &[&str], src: &SourceConfig) -> Result<()> {

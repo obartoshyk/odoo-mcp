@@ -5,7 +5,7 @@ use anyhow::{bail, Context, Result};
 use serde_json::{json, Value as Json};
 
 use odoo_claude_mcp::{from_json, OdooClient, Value};
-use crate::sources::{self, SourceConfig, search_source};
+use crate::sources::{self, SourceConfig, search_source, list_addons, addon_structure};
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
@@ -209,6 +209,28 @@ fn tools_schema() -> Json {
             }
         },
         {
+            "name": "odoo_list_addons",
+            "description": "List all Odoo addons found in the configured source trees with their name, version, summary, and dependencies. Use this first to understand the overall application structure before drilling into specifics.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
+            }
+        },
+        {
+            "name": "odoo_addon_structure",
+            "description": "Return the structural overview of a specific Odoo addon: models it defines, models it extends, HTTP controllers/routes, data files, and security rules. Use after odoo_list_addons to understand what a module contains before reading source code.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "addon": {
+                        "type": "string",
+                        "description": "Technical addon name (directory name), e.g. gt_billing, account, sale"
+                    }
+                },
+                "required": ["addon"]
+            }
+        },
+        {
             "name": "odoo_model_source",
             "description": "Return the Python source code (from the local git checkout) that defines or inherits an Odoo model. Use this to understand field names, types, relations, computed fields, and business logic before building queries.",
             "inputSchema": {
@@ -268,6 +290,8 @@ fn call_tool(odoo: &OdooClient, sources: &[SourceConfig], name: &str, args: &Jso
         "odoo_search_read"    => tool_search_read(odoo, args),
         "odoo_execute_kw"     => tool_execute_kw(odoo, args),
         "odoo_http"           => tool_http(odoo, args),
+        "odoo_list_addons"    => list_addons(sources).map_err(Into::into),
+        "odoo_addon_structure"=> tool_addon_structure(sources, args),
         "odoo_model_source"   => tool_model_source(sources, args),
         "odoo_search_source"  => tool_search_source(sources, args),
         "odoo_update_sources" => tool_update_sources(sources),
@@ -347,6 +371,11 @@ fn tool_http(odoo: &OdooClient, args: &Json) -> Result<String> {
         Ok(json) => Ok(serde_json::to_string_pretty(&json)?),
         Err(_) => Ok(text),
     }
+}
+
+fn tool_addon_structure(sources: &[SourceConfig], args: &Json) -> Result<String> {
+    let addon = args["addon"].as_str().context("missing field: addon")?;
+    addon_structure(addon, sources)
 }
 
 fn tool_model_source(sources: &[SourceConfig], args: &Json) -> Result<String> {
