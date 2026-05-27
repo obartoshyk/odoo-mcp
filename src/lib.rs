@@ -139,6 +139,31 @@ impl OdooClient {
         Ok(text)
     }
 
+    /// Web-session login via /web/session/authenticate. Returns the session_id cookie value.
+    pub fn web_authenticate(&self, db: &str, username: &str, password: &str) -> Result<String> {
+        let endpoint = format!("{}/web/session/authenticate", self.base_url);
+        let body = json!({
+            "jsonrpc": "2.0", "method": "call", "id": 1,
+            "params": {"db": db, "login": username, "password": password}
+        });
+        let resp = self.http.post(&endpoint)
+            .json(&body)
+            .send()
+            .context("web/session/authenticate request failed")?;
+
+        let session_id = resp
+            .headers()
+            .get_all("set-cookie")
+            .iter()
+            .find_map(|v| {
+                let s = v.to_str().ok()?;
+                s.split(';').next()?.strip_prefix("session_id=").map(str::to_string)
+            })
+            .context("No session_id cookie in /web/session/authenticate response")?;
+
+        Ok(session_id)
+    }
+
     /// Like `http_request` but returns raw bytes. Useful for binary responses (PDF, etc.).
     pub fn http_request_bytes(
         &self,

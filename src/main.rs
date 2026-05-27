@@ -60,6 +60,29 @@ fn save_config(config: &Config, path: Option<&PathBuf>) -> Result<()> {
         .with_context(|| format!("Cannot write config: {}", resolved.display()))
 }
 
+// ── Session cache ─────────────────────────────────────────────────────────────
+
+fn session_dir(config_path: Option<&PathBuf>) -> PathBuf {
+    config_path
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+        .unwrap_or_else(|| default_config_path().parent().unwrap().to_path_buf())
+        .join("sessions")
+}
+
+fn load_session(config_path: Option<&PathBuf>, profile: &str) -> Option<String> {
+    let path = session_dir(config_path).join(format!("{profile}.txt"));
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+fn save_session(config_path: Option<&PathBuf>, profile: &str, session_id: &str) {
+    let dir = session_dir(config_path);
+    let _ = std::fs::create_dir_all(&dir);
+    let _ = std::fs::write(dir.join(format!("{profile}.txt")), session_id);
+}
+
 // ── CLI ───────────────────────────────────────────────────────────────────────
 
 /// Odoo XML-RPC CLI connector.
@@ -202,6 +225,21 @@ enum Command {
         output: Option<PathBuf>,
     },
 
+    /// Download a report PDF (e.g. invoice) using the Odoo web session
+    PrintReport {
+        /// Report technical name, e.g. gt_billing.gt_invoice
+        #[arg(long)]
+        report: String,
+
+        /// Record ID(s), comma-separated for multiple, e.g. 1068747 or 1068747,1068748
+        #[arg(long, value_delimiter = ',')]
+        ids: Vec<u64>,
+
+        /// Output file (default: <report_suffix>_<ids>.pdf in current directory)
+        #[arg(short = 'o', long, value_name = "FILE")]
+        output: Option<PathBuf>,
+    },
+
     /// Create initial config file from template (if not already present)
     Init,
 
@@ -311,6 +349,39 @@ fn build_http_client(cert: Option<&str>, key: Option<&str>) -> Result<reqwest::b
     builder.build().context("Failed to build HTTP client")
 }
 
+/// Download a report PDF with session cookie, re-authenticating once if needed.
+fn download_report(
+    odoo: &OdooClient,
+    path: &str,
+    cached_session: Option<String>,
+    db: &str,
+    username: &str,
+    password: &str,
+) -> Result<(Vec<u8>, String)> {
+    let try_download = |session_id: &str| -> Result<Option<Vec<u8>>> {
+        let extra = vec![("Cookie".to_string(), format!("session_id={session_id}"))];
+        let bytes = odoo.http_request_bytes("GET", path, None, "application/json", &extra)?;
+        // PDF starts with %PDF; HTML means login redirect
+        if bytes.starts_with(b"%PDF") {
+            Ok(Some(bytes))
+        } else {
+            Ok(None)
+        }
+    };
+
+    if let Some(sid) = &cached_session {
+        if let Some(bytes) = try_download(sid)? {
+            return Ok((bytes, sid.clone()));
+        }
+    }
+
+    // Cache miss or expired — re-authenticate
+    let new_sid = odoo.web_authenticate(db, username, password)?;
+    let bytes = try_download(&new_sid)?
+        .context("Report download returned HTML even after re-authentication")?;
+    Ok((bytes, new_sid))
+}
+
 /// Extract binary bytes for --output:
 /// - string   → base64-decode
 /// - [single] → recurse into the one element
@@ -404,6 +475,25 @@ fn main() -> Result<()> {
     };
 
     match cli.command {
+        Command::PrintReport { report, ids, output } => {
+            let ids_str = ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+            let report_path = format!("/report/pdf/{report}/{ids_str}");
+
+            let out_path = output.unwrap_or_else(|| {
+                let suffix = report.split('.').last().unwrap_or(&report);
+                PathBuf::from(format!("{suffix}_{ids_str}.pdf"))
+            });
+
+            let cached = load_session(cli.config.as_ref(), profile_name);
+            let (bytes, session_id) =
+                download_report(&odoo, &report_path, cached, &db, &username, &password)?;
+            save_session(cli.config.as_ref(), profile_name, &session_id);
+
+            std::fs::write(&out_path, &bytes)
+                .with_context(|| format!("Cannot write: {}", out_path.display()))?;
+            eprintln!("Wrote {} bytes → {}", bytes.len(), out_path.display());
+        }
+
         Command::Init => {
             let path = cli.config.clone().unwrap_or_else(default_config_path);
             if path.exists() {
