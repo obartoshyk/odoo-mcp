@@ -1,13 +1,13 @@
 mod mcp;
 mod sources;
 
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use odoo_claude_mcp::{from_json, OdooClient, Value};
+use odoo_claude_mcp::OdooClient;
 use serde::Deserialize;
+use serde_json::{json, Value as Json};
 
 // ── Config file ───────────────────────────────────────────────────────────────
 
@@ -307,47 +307,34 @@ fn main() -> Result<()> {
         }
 
         Command::SearchRead { model, domain, fields, limit, offset, order } => {
-            let domain_json: serde_json::Value = serde_json::from_str(&domain)
+            let domain_val: Json = serde_json::from_str(&domain)
                 .with_context(|| format!("Invalid domain JSON: {domain}"))?;
 
-            let mut kwargs: BTreeMap<String, Value> = BTreeMap::new();
-            kwargs.insert("domain".to_string(), from_json(&domain_json));
-            kwargs.insert(
-                "fields".to_string(),
-                Value::Array(fields.into_iter().map(Value::String).collect()),
-            );
+            let mut kwargs = serde_json::Map::new();
+            kwargs.insert("domain".into(), domain_val);
+            kwargs.insert("fields".into(), json!(fields));
             if let Some(lim) = limit {
-                kwargs.insert("limit".to_string(), Value::Int(lim as i64));
+                kwargs.insert("limit".into(), json!(lim));
             }
             if offset > 0 {
-                kwargs.insert("offset".to_string(), Value::Int(offset as i64));
+                kwargs.insert("offset".into(), json!(offset));
             }
             if let Some(ord) = order {
-                kwargs.insert("order".to_string(), Value::String(ord));
+                kwargs.insert("order".into(), json!(ord));
             }
 
-            let result = odoo.execute_kw(
-                &model,
-                "search_read",
-                Value::Array(vec![]),
-                Value::Struct(kwargs),
-            )?;
-            println!("{}", serde_json::to_string_pretty(&result.to_json())?);
+            let result = odoo.execute_kw(&model, "search_read", json!([]), Json::Object(kwargs))?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
         }
 
         Command::ExecuteKw { model, method, args, kwargs } => {
-            let args_json: serde_json::Value = serde_json::from_str(&args)
+            let args_val: Json = serde_json::from_str(&args)
                 .with_context(|| format!("Invalid args JSON: {args}"))?;
-            let kwargs_json: serde_json::Value = serde_json::from_str(&kwargs)
+            let kwargs_val: Json = serde_json::from_str(&kwargs)
                 .with_context(|| format!("Invalid kwargs JSON: {kwargs}"))?;
 
-            let result = odoo.execute_kw(
-                &model,
-                &method,
-                from_json(&args_json),
-                from_json(&kwargs_json),
-            )?;
-            println!("{}", serde_json::to_string_pretty(&result.to_json())?);
+            let result = odoo.execute_kw(&model, &method, args_val, kwargs_val)?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
         }
 
         Command::Http { method, path, body, content_type, headers } => {

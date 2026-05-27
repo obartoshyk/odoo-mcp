@@ -1,10 +1,9 @@
-use std::collections::BTreeMap;
 use std::io::{self, BufRead, Write};
 
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value as Json};
 
-use odoo_claude_mcp::{from_json, OdooClient, Value};
+use odoo_claude_mcp::OdooClient;
 use crate::sources::{self, SourceConfig, search_source, list_addons, addon_structure};
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -303,41 +302,30 @@ fn tool_search_read(odoo: &OdooClient, args: &Json) -> Result<String> {
     let model = args["model"].as_str().context("missing field: model")?;
     let domain_str = args["domain"].as_str().unwrap_or("[]");
     let fields_str = args["fields"].as_str().unwrap_or("id,name");
-    let limit = args["limit"].as_u64().map(|v| v as usize);
-    let offset = args["offset"].as_u64().unwrap_or(0) as usize;
+    let limit = args["limit"].as_u64();
+    let offset = args["offset"].as_u64().unwrap_or(0);
     let order = args["order"].as_str();
 
-    let domain_json: serde_json::Value = serde_json::from_str(domain_str)
+    let domain: Json = serde_json::from_str(domain_str)
         .with_context(|| format!("Invalid domain JSON: {domain_str}"))?;
 
-    let mut kwargs: BTreeMap<String, Value> = BTreeMap::new();
-    kwargs.insert("domain".into(), from_json(&domain_json));
-    kwargs.insert(
-        "fields".into(),
-        Value::Array(
-            fields_str
-                .split(',')
-                .map(|f| Value::String(f.trim().to_string()))
-                .collect(),
-        ),
-    );
+    let fields: Vec<&str> = fields_str.split(',').map(str::trim).collect();
+
+    let mut kwargs = serde_json::Map::new();
+    kwargs.insert("domain".into(), domain);
+    kwargs.insert("fields".into(), json!(fields));
     if let Some(lim) = limit {
-        kwargs.insert("limit".into(), Value::Int(lim as i64));
+        kwargs.insert("limit".into(), json!(lim));
     }
     if offset > 0 {
-        kwargs.insert("offset".into(), Value::Int(offset as i64));
+        kwargs.insert("offset".into(), json!(offset));
     }
     if let Some(ord) = order {
-        kwargs.insert("order".into(), Value::String(ord.to_string()));
+        kwargs.insert("order".into(), json!(ord));
     }
 
-    let result = odoo.execute_kw(
-        model,
-        "search_read",
-        Value::Array(vec![]),
-        Value::Struct(kwargs),
-    )?;
-    Ok(serde_json::to_string_pretty(&result.to_json())?)
+    let result = odoo.execute_kw(model, "search_read", json!([]), Json::Object(kwargs))?;
+    Ok(serde_json::to_string_pretty(&result)?)
 }
 
 fn tool_execute_kw(odoo: &OdooClient, args: &Json) -> Result<String> {
@@ -346,18 +334,13 @@ fn tool_execute_kw(odoo: &OdooClient, args: &Json) -> Result<String> {
     let args_str = args["args"].as_str().unwrap_or("[]");
     let kwargs_str = args["kwargs"].as_str().unwrap_or("{}");
 
-    let args_json: serde_json::Value = serde_json::from_str(args_str)
+    let args_val: Json = serde_json::from_str(args_str)
         .with_context(|| format!("Invalid args JSON: {args_str}"))?;
-    let kwargs_json: serde_json::Value = serde_json::from_str(kwargs_str)
+    let kwargs_val: Json = serde_json::from_str(kwargs_str)
         .with_context(|| format!("Invalid kwargs JSON: {kwargs_str}"))?;
 
-    let result = odoo.execute_kw(
-        model,
-        method,
-        from_json(&args_json),
-        from_json(&kwargs_json),
-    )?;
-    Ok(serde_json::to_string_pretty(&result.to_json())?)
+    let result = odoo.execute_kw(model, method, args_val, kwargs_val)?;
+    Ok(serde_json::to_string_pretty(&result)?)
 }
 
 fn tool_http(odoo: &OdooClient, args: &Json) -> Result<String> {
