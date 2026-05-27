@@ -358,21 +358,15 @@ fn call_tool(odoo: &OdooClient, sources: &[SourceConfig], name: &str, args: &Jso
 fn tool_search(odoo: &OdooClient, args: &Json) -> Result<String> {
     let model      = args["model"].as_str().context("missing field: model")?;
     let domain_str = args["domain"].as_str().unwrap_or("[]");
-    let limit      = args["limit"].as_u64();
-    let offset     = args["offset"].as_u64().unwrap_or(0);
+    let limit      = args["limit"].as_u64().map(|v| v as usize);
+    let offset     = args["offset"].as_u64().unwrap_or(0) as usize;
     let order      = args["order"].as_str();
 
     let domain: Json = serde_json::from_str(domain_str)
         .with_context(|| format!("Invalid domain JSON: {domain_str}"))?;
 
-    let mut kwargs = serde_json::Map::new();
-    kwargs.insert("domain".into(), domain);
-    if let Some(lim) = limit { kwargs.insert("limit".into(), json!(lim)); }
-    if offset > 0 { kwargs.insert("offset".into(), json!(offset)); }
-    if let Some(ord) = order { kwargs.insert("order".into(), json!(ord)); }
-
-    let result = odoo.execute_kw(model, "search", json!([]), Json::Object(kwargs))?;
-    Ok(serde_json::to_string_pretty(&result)?)
+    let ids = odoo.search_all(model, domain, order, offset, limit)?;
+    Ok(serde_json::to_string_pretty(&Json::Array(ids))?)
 }
 
 fn tool_search_count(odoo: &OdooClient, args: &Json) -> Result<String> {
@@ -418,33 +412,19 @@ fn tool_fields_get(odoo: &OdooClient, args: &Json) -> Result<String> {
 }
 
 fn tool_search_read(odoo: &OdooClient, args: &Json) -> Result<String> {
-    let model = args["model"].as_str().context("missing field: model")?;
+    let model      = args["model"].as_str().context("missing field: model")?;
     let domain_str = args["domain"].as_str().unwrap_or("[]");
     let fields_str = args["fields"].as_str().unwrap_or("id,name");
-    let limit = args["limit"].as_u64();
-    let offset = args["offset"].as_u64().unwrap_or(0);
-    let order = args["order"].as_str();
+    let limit      = args["limit"].as_u64().map(|v| v as usize);
+    let offset     = args["offset"].as_u64().unwrap_or(0) as usize;
+    let order      = args["order"].as_str();
 
     let domain: Json = serde_json::from_str(domain_str)
         .with_context(|| format!("Invalid domain JSON: {domain_str}"))?;
+    let fields: Vec<String> = fields_str.split(',').map(|s| s.trim().to_string()).collect();
 
-    let fields: Vec<&str> = fields_str.split(',').map(str::trim).collect();
-
-    let mut kwargs = serde_json::Map::new();
-    kwargs.insert("domain".into(), domain);
-    kwargs.insert("fields".into(), json!(fields));
-    if let Some(lim) = limit {
-        kwargs.insert("limit".into(), json!(lim));
-    }
-    if offset > 0 {
-        kwargs.insert("offset".into(), json!(offset));
-    }
-    if let Some(ord) = order {
-        kwargs.insert("order".into(), json!(ord));
-    }
-
-    let result = odoo.execute_kw(model, "search_read", json!([]), Json::Object(kwargs))?;
-    Ok(serde_json::to_string_pretty(&result)?)
+    let records = odoo.search_read_all(model, domain, &fields, order, offset, limit)?;
+    Ok(serde_json::to_string_pretty(&Json::Array(records))?)
 }
 
 fn tool_execute_kw(odoo: &OdooClient, args: &Json) -> Result<String> {

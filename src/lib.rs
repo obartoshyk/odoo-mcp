@@ -1,6 +1,31 @@
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value as Json};
 
+pub const PAGE_SIZE: usize = 300;
+
+/// Fetch pages via `fetch(offset, limit) -> Vec<Json>` until exhausted or `max` reached.
+pub fn paginate<F>(start: usize, max: Option<usize>, fetch: F) -> Result<Vec<Json>>
+where
+    F: Fn(usize, usize) -> Result<Vec<Json>>,
+{
+    let mut all: Vec<Json> = Vec::new();
+    let mut offset = start;
+    loop {
+        let limit = match max {
+            Some(m) => PAGE_SIZE.min(m.saturating_sub(all.len())),
+            None    => PAGE_SIZE,
+        };
+        if limit == 0 { break; }
+        let page = fetch(offset, limit)?;
+        let n = page.len();
+        all.extend(page);
+        offset += n;
+        if n < limit { break; } // last page returned fewer than requested
+        if max.is_some_and(|m| all.len() >= m) { break; }
+    }
+    Ok(all)
+}
+
 // ── OdooClient ────────────────────────────────────────────────────────────────
 
 pub struct OdooClient {
@@ -95,6 +120,52 @@ impl OdooClient {
             "execute_kw",
             json!([self.db, uid, self.password, model, method, args, kwargs]),
         )
+    }
+
+    /// Fetch all pages of a `search_read` query in chunks of `PAGE_SIZE`.
+    /// If `max` is Some(n), stops after n total records.
+    /// `offset` is the starting offset (from CLI `--offset`).
+    pub fn search_read_all(
+        &self,
+        model: &str,
+        domain: Json,
+        fields: &[String],
+        order: Option<&str>,
+        offset: usize,
+        max: Option<usize>,
+    ) -> Result<Vec<Json>> {
+        paginate(offset, max, |off, lim| {
+            let mut kw = serde_json::Map::new();
+            kw.insert("domain".into(), domain.clone());
+            kw.insert("fields".into(), json!(fields));
+            kw.insert("limit".into(),  json!(lim));
+            kw.insert("offset".into(), json!(off));
+            if let Some(ord) = order { kw.insert("order".into(), json!(ord)); }
+            let result = self.execute_kw(model, "search_read", json!([]), Json::Object(kw))?;
+            result.as_array().cloned().context("search_read returned non-array")
+        })
+    }
+
+    /// Fetch all IDs of a `search` query in chunks of `PAGE_SIZE`.
+    /// If `max` is Some(n), stops after n total IDs.
+    /// `offset` is the starting offset.
+    pub fn search_all(
+        &self,
+        model: &str,
+        domain: Json,
+        order: Option<&str>,
+        offset: usize,
+        max: Option<usize>,
+    ) -> Result<Vec<Json>> {
+        paginate(offset, max, |off, lim| {
+            let mut kw = serde_json::Map::new();
+            kw.insert("domain".into(), domain.clone());
+            kw.insert("limit".into(),  json!(lim));
+            kw.insert("offset".into(), json!(off));
+            if let Some(ord) = order { kw.insert("order".into(), json!(ord)); }
+            let result = self.execute_kw(model, "search", json!([]), Json::Object(kw))?;
+            result.as_array().cloned().context("search returned non-array")
+        })
     }
 
     /// Direct HTTP request to any Odoo endpoint (bypasses JSON-RPC).

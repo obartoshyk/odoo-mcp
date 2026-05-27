@@ -633,13 +633,8 @@ fn main() -> Result<()> {
         Command::Search { model, domain, limit, offset, order } => {
             let domain_val: Json = serde_json::from_str(&domain)
                 .with_context(|| format!("Invalid domain JSON: {domain}"))?;
-            let mut kwargs = serde_json::Map::new();
-            kwargs.insert("domain".into(), domain_val);
-            if let Some(lim) = limit { kwargs.insert("limit".into(), json!(lim)); }
-            if offset > 0 { kwargs.insert("offset".into(), json!(offset)); }
-            if let Some(ord) = order { kwargs.insert("order".into(), json!(ord)); }
-            let result = odoo.execute_kw(&model, "search", json!([]), Json::Object(kwargs))?;
-            println!("{}", serde_json::to_string_pretty(&result)?);
+            let ids = odoo.search_all(&model, domain_val, order.as_deref(), offset, limit)?;
+            println!("{}", serde_json::to_string_pretty(&Json::Array(ids))?);
         }
 
         Command::SearchCount { model, domain } => {
@@ -671,22 +666,10 @@ fn main() -> Result<()> {
         Command::SearchRead { model, domain, fields, limit, offset, order } => {
             let domain_val: Json = serde_json::from_str(&domain)
                 .with_context(|| format!("Invalid domain JSON: {domain}"))?;
-
-            let mut kwargs = serde_json::Map::new();
-            kwargs.insert("domain".into(), domain_val);
-            kwargs.insert("fields".into(), json!(fields));
-            if let Some(lim) = limit {
-                kwargs.insert("limit".into(), json!(lim));
-            }
-            if offset > 0 {
-                kwargs.insert("offset".into(), json!(offset));
-            }
-            if let Some(ord) = order {
-                kwargs.insert("order".into(), json!(ord));
-            }
-
-            let result = odoo.execute_kw(&model, "search_read", json!([]), Json::Object(kwargs))?;
-            println!("{}", serde_json::to_string_pretty(&result)?);
+            let records = odoo.search_read_all(
+                &model, domain_val, &fields, order.as_deref(), offset, limit,
+            )?;
+            println!("{}", serde_json::to_string_pretty(&Json::Array(records))?);
         }
 
         Command::ExecuteKw { model, method, args, kwargs, output } => {
