@@ -21,13 +21,15 @@ struct Config {
 
 #[derive(Deserialize, Serialize, Default, Clone)]
 struct ConnectionConfig {
-    #[serde(skip_serializing_if = "Option::is_none")] url:      Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")] ext_url:  Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")] db:       Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")] username: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")] password: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")] cert:     Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")] key:      Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")] url:       Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")] ext_url:   Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")] db:        Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")] username:  Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")] password:  Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")] cert:      Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")] key:       Option<String>,
+    /// Safe mode (default: true). When true, execute-kw is blocked.
+    #[serde(skip_serializing_if = "Option::is_none")] safe_mode: Option<bool>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     sources: Vec<sources::SourceConfig>,
 }
@@ -290,16 +292,18 @@ enum ConfigCommand {
     /// Create or update a connection profile
     Set {
         /// Profile name to create or update
-        #[arg(long)] profile: String,
-        #[arg(long)] url:      Option<String>,
-        #[arg(long)] db:       Option<String>,
-        #[arg(long)] username: Option<String>,
-        #[arg(long)] password: Option<String>,
-        #[arg(long)] ext_url:  Option<String>,
-        #[arg(long)] cert:     Option<String>,
-        #[arg(long)] key:      Option<String>,
+        #[arg(long)] profile:   String,
+        #[arg(long)] url:       Option<String>,
+        #[arg(long)] db:        Option<String>,
+        #[arg(long)] username:  Option<String>,
+        #[arg(long)] password:  Option<String>,
+        #[arg(long)] ext_url:   Option<String>,
+        #[arg(long)] cert:      Option<String>,
+        #[arg(long)] key:       Option<String>,
+        /// Safe mode: true (default) blocks execute-kw; false allows it
+        #[arg(long)] safe_mode: Option<bool>,
         /// Make this the default profile
-        #[arg(long)] default:  bool,
+        #[arg(long)] default:   bool,
     },
     /// Remove a connection profile
     Remove {
@@ -492,6 +496,7 @@ fn main() -> Result<()> {
         (db, username, password)
     };
 
+    let safe_mode = cfg_conn.safe_mode.unwrap_or(true);
     let sources = cfg_conn.sources.clone();
     let http = build_http_client(cert.as_deref(), key.as_deref())?;
     let mut odoo = OdooClient::new(&url, &db, &password, http);
@@ -570,15 +575,16 @@ fn main() -> Result<()> {
                     }
                     print!("{}", serde_yaml::to_string(&masked).context("Serialization failed")?);
                 }
-                ConfigCommand::Set { profile, url, db, username, password, ext_url, cert, key, default } => {
+                ConfigCommand::Set { profile, url, db, username, password, ext_url, cert, key, safe_mode, default } => {
                     let conn = cfg.connections.entry(profile.clone()).or_default();
-                    if let Some(v) = url      { conn.url      = Some(v); }
-                    if let Some(v) = db       { conn.db       = Some(v); }
-                    if let Some(v) = username { conn.username = Some(v); }
-                    if let Some(v) = password { conn.password = Some(v); }
-                    if let Some(v) = ext_url  { conn.ext_url  = Some(v); }
-                    if let Some(v) = cert     { conn.cert     = Some(v); }
-                    if let Some(v) = key      { conn.key      = Some(v); }
+                    if let Some(v) = url       { conn.url       = Some(v); }
+                    if let Some(v) = db        { conn.db        = Some(v); }
+                    if let Some(v) = username  { conn.username  = Some(v); }
+                    if let Some(v) = password  { conn.password  = Some(v); }
+                    if let Some(v) = ext_url   { conn.ext_url   = Some(v); }
+                    if let Some(v) = cert      { conn.cert      = Some(v); }
+                    if let Some(v) = key       { conn.key       = Some(v); }
+                    if let Some(v) = safe_mode { conn.safe_mode = Some(v); }
                     if default { cfg.default = Some(profile.clone()); }
                     save_config(&cfg, Some(&path))?;
                     println!("Saved profile '{profile}' → {}", path.display());
@@ -605,7 +611,7 @@ fn main() -> Result<()> {
         }
 
         Command::Serve => {
-            mcp::run_server(odoo, sources)?;
+            mcp::run_server(odoo, sources, safe_mode)?;
         }
 
         Command::UpdateSources => {
@@ -673,6 +679,12 @@ fn main() -> Result<()> {
         }
 
         Command::ExecuteKw { model, method, args, kwargs, output } => {
+            if safe_mode {
+                bail!(
+                    "execute-kw is disabled in safe mode.\n\
+                     To enable: odoo-mcp config set --profile {profile_name} --safe-mode false"
+                );
+            }
             let args_val: Json = serde_json::from_str(&args)
                 .with_context(|| format!("Invalid args JSON: {args}"))?;
             let kwargs_val: Json = serde_json::from_str(&kwargs)

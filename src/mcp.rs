@@ -8,7 +8,7 @@ use crate::sources::{self, SourceConfig, search_source, list_addons, addon_struc
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
-pub fn run_server(odoo: OdooClient, srcs: Vec<SourceConfig>) -> Result<()> {
+pub fn run_server(odoo: OdooClient, srcs: Vec<SourceConfig>, safe_mode: bool) -> Result<()> {
     // Auto-update sources marked with update_on_serve: true.
     let to_update: Vec<_> = srcs.iter().filter(|s| s.update_on_serve).collect();
     if !to_update.is_empty() {
@@ -65,12 +65,12 @@ pub fn run_server(odoo: OdooClient, srcs: Vec<SourceConfig>) -> Result<()> {
                 }),
             ),
 
-            "tools/list" => ok_resp(id, json!({"tools": tools_schema()})),
+            "tools/list" => ok_resp(id, json!({"tools": tools_schema(safe_mode)})),
 
             "tools/call" => {
                 let name = msg["params"]["name"].as_str().unwrap_or("");
                 let args = &msg["params"]["arguments"];
-                match call_tool(&odoo, &sources, name, args) {
+                match call_tool(&odoo, &sources, safe_mode, name, args) {
                     Ok(text) => ok_resp(
                         id,
                         json!({"content": [{"type": "text", "text": text}]}),
@@ -112,8 +112,8 @@ fn err_resp(id: Json, code: i32, message: &str) -> Json {
 
 // ── Tool schema ───────────────────────────────────────────────────────────────
 
-fn tools_schema() -> Json {
-    json!([
+fn tools_schema(safe_mode: bool) -> Json {
+    let mut tools = json!([
         {
             "name": "odoo_search_read",
             "description": "Search and read records from an Odoo model. Returns a JSON array of matching records.",
@@ -332,12 +332,22 @@ fn tools_schema() -> Json {
                 "properties": {}
             }
         }
-    ])
+    ]); // end tools list
+
+    if safe_mode {
+        // Remove odoo_execute_kw from the list — not visible to the AI in safe mode.
+            tools.as_array_mut().unwrap().retain(|t| t["name"] != "odoo_execute_kw");
+    }
+
+    tools
 }
 
 // ── Tool dispatch ─────────────────────────────────────────────────────────────
 
-fn call_tool(odoo: &OdooClient, sources: &[SourceConfig], name: &str, args: &Json) -> Result<String> {
+fn call_tool(odoo: &OdooClient, sources: &[SourceConfig], safe_mode: bool, name: &str, args: &Json) -> Result<String> {
+    if safe_mode && name == "odoo_execute_kw" {
+        bail!("odoo_execute_kw is disabled in safe mode. Set safe_mode: false in the profile config to enable it.");
+    }
     match name {
         "odoo_search"         => tool_search(odoo, args),
         "odoo_search_count"   => tool_search_count(odoo, args),
