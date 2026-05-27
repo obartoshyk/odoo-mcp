@@ -20,3 +20,4 @@ clap = { version = "4", features = ["derive", "env"] }
 anyhow = "1"
 dirs = "5"
 gix = { version = "0.84.0", features = ["blocking-http-transport-reqwest-rust-tls", "worktree-mutation"] }
+base64 = "0.22"

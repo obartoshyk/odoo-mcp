@@ -138,4 +138,47 @@ impl OdooClient {
 
         Ok(text)
     }
+
+    /// Like `http_request` but returns raw bytes. Useful for binary responses (PDF, etc.).
+    pub fn http_request_bytes(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&str>,
+        content_type: &str,
+        extra_headers: &[(String, String)],
+    ) -> Result<Vec<u8>> {
+        let url = format!("{}{}", self.base_url, path);
+        let mut builder = match method.to_uppercase().as_str() {
+            "GET"    => self.http.get(&url),
+            "POST"   => self.http.post(&url),
+            "PUT"    => self.http.put(&url),
+            "PATCH"  => self.http.patch(&url),
+            "DELETE" => self.http.delete(&url),
+            "HEAD"   => self.http.head(&url),
+            other    => bail!("Unsupported HTTP method: {other}"),
+        };
+
+        for (k, v) in extra_headers {
+            builder = builder.header(k.as_str(), v.as_str());
+        }
+
+        if let Some(b) = body {
+            builder = builder.header("Content-Type", content_type).body(b.to_string());
+        }
+
+        let resp = builder
+            .send()
+            .with_context(|| format!("HTTP {method} {url} failed"))?;
+
+        let status = resp.status();
+        let bytes = resp.bytes().context("Failed to read response body")?;
+
+        if !status.is_success() {
+            let preview = String::from_utf8_lossy(&bytes).chars().take(500).collect::<String>();
+            bail!("HTTP {status}: {preview}");
+        }
+
+        Ok(bytes.to_vec())
+    }
 }

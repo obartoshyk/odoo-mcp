@@ -196,6 +196,10 @@ enum Command {
         /// Keyword args as a JSON object, e.g. '{"context":{"active_test":false}}'
         #[arg(long, default_value = "{}")]
         kwargs: String,
+
+        /// Save output to file. If the result is a base64 string, it is decoded first.
+        #[arg(short = 'o', long, value_name = "FILE")]
+        output: Option<PathBuf>,
     },
 
     /// Create initial config file from template (if not already present)
@@ -232,6 +236,10 @@ enum Command {
         /// Extra headers as KEY:VALUE (repeatable, e.g. --header X-Token:abc)
         #[arg(long = "header", value_name = "KEY:VALUE")]
         headers: Vec<String>,
+
+        /// Save raw response bytes to file instead of printing
+        #[arg(short = 'o', long, value_name = "FILE")]
+        output: Option<PathBuf>,
     },
 }
 
@@ -533,17 +541,32 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&result)?);
         }
 
-        Command::ExecuteKw { model, method, args, kwargs } => {
+        Command::ExecuteKw { model, method, args, kwargs, output } => {
             let args_val: Json = serde_json::from_str(&args)
                 .with_context(|| format!("Invalid args JSON: {args}"))?;
             let kwargs_val: Json = serde_json::from_str(&kwargs)
                 .with_context(|| format!("Invalid kwargs JSON: {kwargs}"))?;
 
             let result = odoo.execute_kw(&model, &method, args_val, kwargs_val)?;
-            println!("{}", serde_json::to_string_pretty(&result)?);
+
+            if let Some(out_path) = output {
+                let bytes = if let Some(b64) = result.as_str() {
+                    use base64::Engine;
+                    base64::engine::general_purpose::STANDARD
+                        .decode(b64)
+                        .with_context(|| "Result is a string but not valid base64")?
+                } else {
+                    serde_json::to_string_pretty(&result)?.into_bytes()
+                };
+                std::fs::write(&out_path, &bytes)
+                    .with_context(|| format!("Cannot write: {}", out_path.display()))?;
+                eprintln!("Wrote {} bytes → {}", bytes.len(), out_path.display());
+            } else {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            }
         }
 
-        Command::Http { method, path, body, content_type, headers } => {
+        Command::Http { method, path, body, content_type, headers, output } => {
             let extra: Vec<(String, String)> = headers
                 .iter()
                 .map(|h| {
@@ -554,18 +577,30 @@ fn main() -> Result<()> {
                 })
                 .collect::<Result<_>>()?;
 
-            let text = odoo.http_request(
-                &method,
-                &path,
-                body.as_deref(),
-                &content_type,
-                &extra,
-            )?;
-
-            // Pretty-print JSON responses; fall back to raw text.
-            match serde_json::from_str::<serde_json::Value>(&text) {
-                Ok(json) => println!("{}", serde_json::to_string_pretty(&json)?),
-                Err(_) => print!("{text}"),
+            if let Some(out_path) = output {
+                let bytes = odoo.http_request_bytes(
+                    &method,
+                    &path,
+                    body.as_deref(),
+                    &content_type,
+                    &extra,
+                )?;
+                std::fs::write(&out_path, &bytes)
+                    .with_context(|| format!("Cannot write: {}", out_path.display()))?;
+                eprintln!("Wrote {} bytes → {}", bytes.len(), out_path.display());
+            } else {
+                let text = odoo.http_request(
+                    &method,
+                    &path,
+                    body.as_deref(),
+                    &content_type,
+                    &extra,
+                )?;
+                // Pretty-print JSON responses; fall back to raw text.
+                match serde_json::from_str::<serde_json::Value>(&text) {
+                    Ok(json) => println!("{}", serde_json::to_string_pretty(&json)?),
+                    Err(_) => print!("{text}"),
+                }
             }
         }
     }
