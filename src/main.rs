@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use odoo_connector::{from_json, OdooClient, Value};
+use odoo_claude_mcp::{from_json, OdooClient, Value};
 use serde::Deserialize;
 
 // ── Config file ───────────────────────────────────────────────────────────────
@@ -28,8 +28,8 @@ struct ConnectionConfig {
 
 fn default_config_path() -> PathBuf {
     dirs::config_dir()
-        .map(|d| d.join("odoo-connector").join("config.yaml"))
-        .unwrap_or_else(|| PathBuf::from("odoo-connector.yaml"))
+        .map(|d| d.join("odoo-claude-mcp").join("config.yaml"))
+        .unwrap_or_else(|| PathBuf::from("odoo-claude-mcp.yaml"))
 }
 
 fn load_config(path: Option<&PathBuf>) -> Result<Config> {
@@ -50,11 +50,11 @@ fn load_config(path: Option<&PathBuf>) -> Result<Config> {
 /// Connection parameters are resolved in priority order:
 ///   1. CLI flag
 ///   2. Environment variable (ODOO_URL, ODOO_DB, ODOO_USERNAME, ODOO_PASSWORD, ODOO_CERT, ODOO_KEY)
-///   3. Config file profile (~/.config/odoo-connector/config.yaml)
+///   3. Config file profile (~/.config/odoo-claude-mcp/config.yaml)
 #[derive(Parser)]
-#[command(name = "odoo-connector", version)]
+#[command(name = "odoo-claude-mcp", version)]
 struct Cli {
-    /// Path to YAML config file (default: ~/.config/odoo-connector/config.yaml)
+    /// Path to YAML config file (default: ~/.config/odoo-claude-mcp/config.yaml)
     #[arg(long, env = "ODOO_CONFIG")]
     config: Option<PathBuf>,
 

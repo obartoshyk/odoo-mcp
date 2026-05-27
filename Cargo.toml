@@ -1,14 +1,14 @@
 [package]
-name = "odoo-connector"
+name = "odoo-claude-mcp"
 version = "0.1.0"
 edition = "2024"
 
 [[bin]]
-name = "odoo-connector"
+name = "odoo-claude-mcp"
 path = "src/main.rs"
 
 [lib]
-name = "odoo_connector"
+name = "odoo_claude_mcp"
 path = "src/lib.rs"
 
 [dependencies]
