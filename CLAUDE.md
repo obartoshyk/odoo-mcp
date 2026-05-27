@@ -18,7 +18,13 @@ cargo install --path .
 
 ## Config file
 
-Default path: `~/.config/odoo-xml-rpc/config.yaml`
+Default path (per OS):
+
+| OS | Path |
+|----|------|
+| Linux | `~/.config/odoo-xml-rpc/config.yaml` |
+| macOS | `~/Library/Application Support/odoo-xml-rpc/config.yaml` |
+| Windows | `%APPDATA%\odoo-xml-rpc\config.yaml` |
 
 ```yaml
 default: production   # profile used when --profile is not specified
@@ -29,6 +35,7 @@ connections:
     db: odoo
     username: admin
     password: "secret"
+    ext_url: https://ext-odoo.gurtam.team  # optional: public URL, no auth required
     cert: /tmp/crt/client.crt   # optional, for mTLS
     key: /tmp/crt/client.key
 
@@ -75,12 +82,60 @@ odoo-xml-rpc \
   search-read --model res.partner --fields id,name,email --limit 5
 ```
 
-Env vars: `ODOO_URL`, `ODOO_DB`, `ODOO_USERNAME`, `ODOO_PASSWORD`, `ODOO_CERT`, `ODOO_KEY`, `ODOO_PROFILE`, `ODOO_CONFIG`.
+### Direct HTTP (`http` subcommand)
+
+Bypasses XML-RPC entirely — sends a raw HTTP request to any Odoo path. Response is pretty-printed if JSON, raw text otherwise. Auth is never performed.
+
+```bash
+# GET any endpoint (uses mTLS client from the active profile)
+odoo-xml-rpc http GET /web/health
+
+# POST with a JSON body (Content-Type: application/json by default)
+odoo-xml-rpc http POST /web/dataset/call_kw \
+  --body '{"jsonrpc":"2.0","method":"call","id":1,"params":{"model":"res.partner","method":"search_read","args":[[]],"kwargs":{"fields":["id","name"],"limit":5}}}'
+
+# Custom Content-Type and extra headers
+odoo-xml-rpc http POST /some/form/endpoint \
+  --content-type "application/x-www-form-urlencoded" \
+  --body "param1=value1&param2=value2" \
+  --header "X-Custom-Token:abc123"
+
+# Multiple extra headers
+odoo-xml-rpc http GET /api/v2/resource \
+  --header "Authorization:Bearer $TOKEN" \
+  --header "Accept:application/json"
+```
+
+### ext-odoo — unauthenticated public endpoints
+
+`--ext` switches the base URL to `ext_url` from the config and skips authentication entirely. Intended for endpoints exposed on the public `ext-odoo` address that require no credentials.
+
+```bash
+# GET a public endpoint using ext_url from the active config profile
+odoo-xml-rpc --ext http GET /api/v2/public/ping
+
+# POST to a public endpoint
+odoo-xml-rpc --ext http POST /api/v2/webhook \
+  --body '{"event":"test"}'
+
+# Pass ext-url inline without a config file
+odoo-xml-rpc --ext-url https://ext-odoo.gurtam.team --ext \
+  http GET /api/v2/public/status
+
+# Use a non-default profile that has ext_url configured
+odoo-xml-rpc --profile staging --ext http GET /api/v2/public/info
+
+# With extra headers (e.g. a shared secret for semi-public endpoints)
+odoo-xml-rpc --ext http GET /api/v2/internal/report \
+  --header "X-Api-Key:$EXT_KEY"
+```
+
+Env vars: `ODOO_URL`, `ODOO_DB`, `ODOO_USERNAME`, `ODOO_PASSWORD`, `ODOO_CERT`, `ODOO_KEY`, `ODOO_PROFILE`, `ODOO_CONFIG`, `ODOO_EXT_URL`.
 
 ## Architecture
 
-- `src/lib.rs` — `Value` enum (XML-RPC types), XML serialization/deserialization (via `roxmltree`), base64 codec, `OdooClient` struct
-- `src/main.rs` — CLI (`clap` derive) with subcommands: `auth`, `search-read`, `execute-kw`
+- `src/lib.rs` — `Value` enum (XML-RPC types), XML serialization/deserialization (via `roxmltree`), base64 codec, `OdooClient` struct (with `http_request()` for direct HTTP)
+- `src/main.rs` — CLI (`clap` derive) with subcommands: `auth`, `search-read`, `execute-kw`, `http`
 
 XML-RPC protocol is implemented directly (no external xmlrpc crate). TLS via `rustls` (pure Rust, no system OpenSSL dependency).
 

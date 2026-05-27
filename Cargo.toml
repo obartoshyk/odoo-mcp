@@ -19,3 +19,4 @@ serde_yaml = "0.9"
 clap = { version = "4", features = ["derive", "env"] }
 anyhow = "1"
 roxmltree = "0.20"
+dirs = "5"

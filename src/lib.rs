@@ -287,6 +287,7 @@ fn b64_decode(s: &str) -> Vec<u8> {
 // ── OdooClient ────────────────────────────────────────────────────────────────
 
 pub struct OdooClient {
+    base_url: String,
     common_url: String,
     object_url: String,
     db: String,
@@ -299,6 +300,7 @@ impl OdooClient {
     pub fn new(url: &str, db: &str, password: &str, http: reqwest::blocking::Client) -> Self {
         let base = url.trim_end_matches('/');
         OdooClient {
+            base_url: base.to_string(),
             common_url: format!("{base}/xmlrpc/2/common"),
             object_url: format!("{base}/xmlrpc/2/object"),
             db: db.to_string(),
@@ -375,5 +377,51 @@ impl OdooClient {
                 kwargs,
             ],
         )
+    }
+
+    /// Direct HTTP request to any Odoo endpoint (bypasses XML-RPC).
+    ///
+    /// Returns the raw response body as a string.
+    pub fn http_request(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&str>,
+        content_type: &str,
+        extra_headers: &[(String, String)],
+    ) -> Result<String> {
+        let url = format!("{}{}", self.base_url, path);
+        let mut builder = match method.to_uppercase().as_str() {
+            "GET" => self.http.get(&url),
+            "POST" => self.http.post(&url),
+            "PUT" => self.http.put(&url),
+            "PATCH" => self.http.patch(&url),
+            "DELETE" => self.http.delete(&url),
+            "HEAD" => self.http.head(&url),
+            other => bail!("Unsupported HTTP method: {other}"),
+        };
+
+        for (k, v) in extra_headers {
+            builder = builder.header(k.as_str(), v.as_str());
+        }
+
+        if let Some(b) = body {
+            builder = builder
+                .header("Content-Type", content_type)
+                .body(b.to_string());
+        }
+
+        let resp = builder
+            .send()
+            .with_context(|| format!("HTTP {method} {url} failed"))?;
+
+        let status = resp.status();
+        let text = resp.text().context("Failed to read response body")?;
+
+        if !status.is_success() {
+            bail!("HTTP {status}: {}", text.chars().take(500).collect::<String>());
+        }
+
+        Ok(text)
     }
 }

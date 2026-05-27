@@ -18,6 +18,7 @@ struct Config {
 #[derive(Deserialize, Default, Clone)]
 struct ConnectionConfig {
     url: Option<String>,
+    ext_url: Option<String>,
     db: Option<String>,
     username: Option<String>,
     password: Option<String>,
@@ -26,24 +27,9 @@ struct ConnectionConfig {
 }
 
 fn default_config_path() -> PathBuf {
-    dirs_next()
+    dirs::config_dir()
         .map(|d| d.join("odoo-xml-rpc").join("config.yaml"))
         .unwrap_or_else(|| PathBuf::from("odoo-xml-rpc.yaml"))
-}
-
-/// Returns the user's config directory (~/.config on Linux/macOS, %APPDATA% on Windows).
-fn dirs_next() -> Option<PathBuf> {
-    // Use $XDG_CONFIG_HOME if set, otherwise ~/.config
-    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
-        return Some(PathBuf::from(xdg));
-    }
-    dirs_home().map(|h| h.join(".config"))
-}
-
-fn dirs_home() -> Option<PathBuf> {
-    std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
 }
 
 fn load_config(path: Option<&PathBuf>) -> Result<Config> {
@@ -100,6 +86,14 @@ struct Cli {
     #[arg(long, env = "ODOO_KEY")]
     key: Option<String>,
 
+    /// Alternative public URL for unauthenticated ext-odoo endpoints
+    #[arg(long, env = "ODOO_EXT_URL")]
+    ext_url: Option<String>,
+
+    /// Use ext_url as base and skip authentication
+    #[arg(long)]
+    ext: bool,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -153,6 +147,27 @@ enum Command {
         /// Keyword args as a JSON object, e.g. '{"context":{"active_test":false}}'
         #[arg(long, default_value = "{}")]
         kwargs: String,
+    },
+
+    /// Direct HTTP request to any Odoo endpoint (no XML-RPC wrapping)
+    Http {
+        /// HTTP method: GET, POST, PUT, PATCH, DELETE, HEAD
+        method: String,
+
+        /// Path on the Odoo server, e.g. /web/dataset/call_kw
+        path: String,
+
+        /// Request body (for POST/PUT/PATCH)
+        #[arg(long)]
+        body: Option<String>,
+
+        /// Content-Type header for requests with a body
+        #[arg(long, default_value = "application/json")]
+        content_type: String,
+
+        /// Extra headers as KEY:VALUE (repeatable, e.g. --header X-Token:abc)
+        #[arg(long = "header", value_name = "KEY:VALUE")]
+        headers: Vec<String>,
     },
 }
 
@@ -213,17 +228,43 @@ fn main() -> Result<()> {
         .cloned()
         .unwrap_or_default();
 
+    let is_http_cmd = matches!(&cli.command, Command::Http { .. });
+    // Skip auth for --ext mode and for direct HTTP calls.
+    let needs_auth = !cli.ext && !is_http_cmd;
+
     // Merge: CLI/env > config file.
-    let url      = require(resolve(cli.url,      cfg_conn.url),      "url")?;
-    let db       = resolve(cli.db,       cfg_conn.db)      .unwrap_or_else(|| "odoo".to_string());
-    let username = resolve(cli.username, cfg_conn.username) .unwrap_or_else(|| "admin".to_string());
-    let password = require(resolve(cli.password, cfg_conn.password), "password")?;
-    let cert     = resolve(cli.cert,     cfg_conn.cert);
-    let key      = resolve(cli.key,      cfg_conn.key);
+    let url = if cli.ext {
+        require(
+            resolve(cli.ext_url, cfg_conn.ext_url),
+            "ext-url",
+        )?
+    } else {
+        require(resolve(cli.url, cfg_conn.url), "url")?
+    };
+    let cert = resolve(cli.cert, cfg_conn.cert);
+    let key  = resolve(cli.key,  cfg_conn.key);
+
+    // For HTTP-only commands we don't need credentials.
+    let (db, username, password) = if needs_auth {
+        let db       = resolve(cli.db,       cfg_conn.db)      .unwrap_or_else(|| "odoo".to_string());
+        let username = resolve(cli.username, cfg_conn.username) .unwrap_or_else(|| "admin".to_string());
+        let password = require(resolve(cli.password, cfg_conn.password), "password")?;
+        (db, username, password)
+    } else {
+        let db       = resolve(cli.db,       cfg_conn.db)      .unwrap_or_default();
+        let username = resolve(cli.username, cfg_conn.username) .unwrap_or_default();
+        let password = resolve(cli.password, cfg_conn.password).unwrap_or_default();
+        (db, username, password)
+    };
 
     let http = build_http_client(cert.as_deref(), key.as_deref())?;
     let mut odoo = OdooClient::new(&url, &db, &password, http);
-    let uid = odoo.authenticate(&username)?;
+
+    let uid = if needs_auth {
+        odoo.authenticate(&username)?
+    } else {
+        0
+    };
 
     match cli.command {
         Command::Auth => {
@@ -278,6 +319,32 @@ fn main() -> Result<()> {
                 from_json(&kwargs_json),
             )?;
             println!("{}", serde_json::to_string_pretty(&result.to_json())?);
+        }
+
+        Command::Http { method, path, body, content_type, headers } => {
+            let extra: Vec<(String, String)> = headers
+                .iter()
+                .map(|h| {
+                    let (k, v) = h.split_once(':').with_context(|| {
+                        format!("Invalid header (expected KEY:VALUE): {h}")
+                    })?;
+                    Ok((k.trim().to_string(), v.trim().to_string()))
+                })
+                .collect::<Result<_>>()?;
+
+            let text = odoo.http_request(
+                &method,
+                &path,
+                body.as_deref(),
+                &content_type,
+                &extra,
+            )?;
+
+            // Pretty-print JSON responses; fall back to raw text.
+            match serde_json::from_str::<serde_json::Value>(&text) {
+                Ok(json) => println!("{}", serde_json::to_string_pretty(&json)?),
+                Err(_) => print!("{text}"),
+            }
         }
     }
 

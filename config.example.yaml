@@ -12,6 +12,8 @@ connections:
     db: odoo
     username: admin
     password: "your-api-key-or-password"
+    # Alternative public URL for unauthenticated endpoints (ext-odoo)
+    ext_url: https://ext-odoo.example.com
     # mTLS (optional)
     # cert: /path/to/client.crt
     # key: /path/to/client.key
