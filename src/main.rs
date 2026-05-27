@@ -349,37 +349,48 @@ fn build_http_client(cert: Option<&str>, key: Option<&str>) -> Result<reqwest::b
     builder.build().context("Failed to build HTTP client")
 }
 
-/// Download a report PDF with session cookie, re-authenticating once if needed.
-fn download_report(
+/// Return a valid web session_id: use cache if present, otherwise authenticate and cache it.
+fn ensure_session(
     odoo: &OdooClient,
-    path: &str,
-    cached_session: Option<String>,
+    config_path: Option<&PathBuf>,
+    profile: &str,
     db: &str,
     username: &str,
     password: &str,
-) -> Result<(Vec<u8>, String)> {
+) -> Result<String> {
+    if let Some(sid) = load_session(config_path, profile) {
+        return Ok(sid);
+    }
+    let sid = odoo.web_authenticate(db, username, password)?;
+    save_session(config_path, profile, &sid);
+    Ok(sid)
+}
+
+/// Download a report PDF with session cookie, re-authenticating once if the session expired.
+fn download_report(
+    odoo: &OdooClient,
+    path: &str,
+    config_path: Option<&PathBuf>,
+    profile: &str,
+    db: &str,
+    username: &str,
+    password: &str,
+) -> Result<Vec<u8>> {
     let try_download = |session_id: &str| -> Result<Option<Vec<u8>>> {
         let extra = vec![("Cookie".to_string(), format!("session_id={session_id}"))];
         let bytes = odoo.http_request_bytes("GET", path, None, "application/json", &extra)?;
-        // PDF starts with %PDF; HTML means login redirect
-        if bytes.starts_with(b"%PDF") {
-            Ok(Some(bytes))
-        } else {
-            Ok(None)
-        }
+        if bytes.starts_with(b"%PDF") { Ok(Some(bytes)) } else { Ok(None) }
     };
 
-    if let Some(sid) = &cached_session {
-        if let Some(bytes) = try_download(sid)? {
-            return Ok((bytes, sid.clone()));
-        }
+    let sid = ensure_session(odoo, config_path, profile, db, username, password)?;
+    if let Some(bytes) = try_download(&sid)? {
+        return Ok(bytes);
     }
 
-    // Cache miss or expired — re-authenticate
+    // Session was cached but expired — re-authenticate once
     let new_sid = odoo.web_authenticate(db, username, password)?;
-    let bytes = try_download(&new_sid)?
-        .context("Report download returned HTML even after re-authentication")?;
-    Ok((bytes, new_sid))
+    save_session(config_path, profile, &new_sid);
+    try_download(&new_sid)?.context("Report download returned HTML even after re-authentication")
 }
 
 /// Extract binary bytes for --output:
@@ -430,14 +441,13 @@ fn main() -> Result<()> {
         .cloned()
         .unwrap_or_default();
 
-    let is_http_cmd    = matches!(&cli.command, Command::Http { .. });
     let is_source_cmd  = matches!(&cli.command, Command::UpdateSources);
     let is_no_auth_cmd = matches!(
         &cli.command,
         Command::Init | Command::Config { .. }
     );
-    // Skip auth for --ext, direct HTTP, source management, and config commands.
-    let needs_auth = !cli.ext && !is_http_cmd && !is_source_cmd && !is_no_auth_cmd;
+    // Skip auth for --ext, source management, and config commands.
+    let needs_auth = !cli.ext && !is_source_cmd && !is_no_auth_cmd;
 
     // Merge: CLI/env > config file.
     let url = if cli.ext {
@@ -451,7 +461,6 @@ fn main() -> Result<()> {
     let cert = resolve(cli.cert, cfg_conn.cert);
     let key  = resolve(cli.key,  cfg_conn.key);
 
-    // For HTTP-only commands we don't need credentials.
     let (db, username, password) = if needs_auth {
         let db       = resolve(cli.db,       cfg_conn.db)      .unwrap_or_else(|| "odoo".to_string());
         let username = resolve(cli.username, cfg_conn.username) .unwrap_or_else(|| "admin".to_string());
@@ -484,10 +493,11 @@ fn main() -> Result<()> {
                 PathBuf::from(format!("{suffix}_{ids_str}.pdf"))
             });
 
-            let cached = load_session(cli.config.as_ref(), profile_name);
-            let (bytes, session_id) =
-                download_report(&odoo, &report_path, cached, &db, &username, &password)?;
-            save_session(cli.config.as_ref(), profile_name, &session_id);
+            let bytes = download_report(
+                &odoo, &report_path,
+                cli.config.as_ref(), profile_name,
+                &db, &username, &password,
+            )?;
 
             std::fs::write(&out_path, &bytes)
                 .with_context(|| format!("Cannot write: {}", out_path.display()))?;
@@ -679,7 +689,7 @@ fn main() -> Result<()> {
         }
 
         Command::Http { method, path, body, content_type, headers, output } => {
-            let extra: Vec<(String, String)> = headers
+            let mut extra: Vec<(String, String)> = headers
                 .iter()
                 .map(|h| {
                     let (k, v) = h.split_once(':').with_context(|| {
@@ -689,26 +699,26 @@ fn main() -> Result<()> {
                 })
                 .collect::<Result<_>>()?;
 
+            // Attach session cookie for authenticated (non-ext) requests.
+            if !cli.ext {
+                let sid = ensure_session(
+                    &odoo, cli.config.as_ref(), profile_name,
+                    &db, &username, &password,
+                )?;
+                extra.push(("Cookie".to_string(), format!("session_id={sid}")));
+            }
+
             if let Some(out_path) = output {
                 let bytes = odoo.http_request_bytes(
-                    &method,
-                    &path,
-                    body.as_deref(),
-                    &content_type,
-                    &extra,
+                    &method, &path, body.as_deref(), &content_type, &extra,
                 )?;
                 std::fs::write(&out_path, &bytes)
                     .with_context(|| format!("Cannot write: {}", out_path.display()))?;
                 eprintln!("Wrote {} bytes → {}", bytes.len(), out_path.display());
             } else {
                 let text = odoo.http_request(
-                    &method,
-                    &path,
-                    body.as_deref(),
-                    &content_type,
-                    &extra,
+                    &method, &path, body.as_deref(), &content_type, &extra,
                 )?;
-                // Pretty-print JSON responses; fall back to raw text.
                 match serde_json::from_str::<serde_json::Value>(&text) {
                     Ok(json) => println!("{}", serde_json::to_string_pretty(&json)?),
                     Err(_) => print!("{text}"),
