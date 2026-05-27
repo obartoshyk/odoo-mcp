@@ -220,6 +220,24 @@ odoo-mcp execute-kw \
   --model account.move \
   --method action_post \
   --args '[[1070023]]'
+
+# Save binary result to file (-o / --output)
+# If the result is a base64 string, it is decoded to raw bytes first.
+# Otherwise the pretty-printed JSON is written.
+odoo-mcp execute-kw \
+  --model ir.attachment \
+  --method read \
+  --args '[[153996]]' \
+  --kwargs '{"fields":["datas"]}' \
+  -o /tmp/attachment.json
+
+# Example: save a base64-encoded file stored in ir.attachment
+odoo-mcp execute-kw \
+  --model ir.attachment \
+  --method read \
+  --args '[[153996]]' \
+  --kwargs '{"fields":["datas"]}' \
+  -o /tmp/file.pdf
 ```
 
 ### `http` — direct HTTP request
@@ -245,6 +263,13 @@ odoo-mcp http POST /some/form/endpoint \
 odoo-mcp http GET /api/v2/resource \
   --header "Authorization:Bearer $TOKEN" \
   --header "X-Custom:value"
+
+# Save raw response bytes to file (-o / --output)
+# Useful for binary downloads (PDFs, images, exports).
+# Requires session cookies for Odoo report endpoints.
+odoo-mcp http GET /report/pdf/account.report_invoice/961403 \
+  --header "Cookie:session_id=YOUR_SESSION" \
+  -o /tmp/invoice.pdf
 ```
 
 ### `--ext` — unauthenticated public endpoints
@@ -595,6 +620,7 @@ JSON-RPC over `/jsonrpc` endpoint (no XML-RPC). TLS via `rustls` (no system Open
 | `gix` (blocking-http-transport-reqwest-rust-tls + worktree-mutation) | Pure-Rust git: clone, fetch, hard reset, SSH key + HTTPS token auth |
 | `serde` + `serde_yaml` | Config deserialization |
 | `serde_json` | JSON-RPC, output, and MCP protocol |
+| `base64` | Decode base64 binary fields when writing to file with `-o` |
 | `clap` (derive + env) | CLI |
 | `dirs` | OS-appropriate config path |
 | `anyhow` | Error handling |
