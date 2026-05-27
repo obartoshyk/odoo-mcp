@@ -1,14 +1,14 @@
 [package]
-name = "odoo-xml-rpc"
+name = "odoo-connector"
 version = "0.1.0"
 edition = "2024"
 
 [[bin]]
-name = "odoo-xml-rpc"
+name = "odoo-connector"
 path = "src/main.rs"
 
 [lib]
-name = "odoo_xml_rpc"
+name = "odoo_connector"
 path = "src/lib.rs"
 
 [dependencies]

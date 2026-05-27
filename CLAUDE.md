@@ -10,9 +10,9 @@ Odoo XML-RPC CLI connector. Outputs JSON to stdout. Reads credentials from a YAM
 
 ```bash
 cargo build --release
-# binary: target/release/odoo-xml-rpc
+# binary: target/release/odoo-connector
 
-# Install to ~/.cargo/bin/ (then available as `odoo-xml-rpc` anywhere):
+# Install to ~/.cargo/bin/ (then available as `odoo-connector` anywhere):
 cargo install --path .
 ```
 
@@ -22,9 +22,9 @@ Default path (per OS):
 
 | OS | Path |
 |----|------|
-| Linux | `~/.config/odoo-xml-rpc/config.yaml` |
-| macOS | `~/Library/Application Support/odoo-xml-rpc/config.yaml` |
-| Windows | `%APPDATA%\odoo-xml-rpc\config.yaml` |
+| Linux | `~/.config/odoo-connector/config.yaml` |
+| macOS | `~/Library/Application Support/odoo-connector/config.yaml` |
+| Windows | `%APPDATA%\odoo-connector\config.yaml` |
 
 ```yaml
 default: production   # profile used when --profile is not specified
@@ -54,13 +54,13 @@ Priority: **CLI flag > env var > config file**.
 
 ```bash
 # Smoke test — prints uid, db, url
-odoo-xml-rpc auth
+odoo-connector auth
 
 # Use a specific profile
-odoo-xml-rpc --profile dev auth
+odoo-connector --profile dev auth
 
 # search_read
-odoo-xml-rpc search-read \
+odoo-connector search-read \
   --model account.move \
   --domain '[["state","=","posted"],["partner_id","=",1234]]' \
   --fields id,name,amount_total,payment_state \
@@ -68,14 +68,14 @@ odoo-xml-rpc search-read \
   --order "id desc"
 
 # execute_kw — any model/method
-odoo-xml-rpc execute-kw \
+odoo-connector execute-kw \
   --model account.move \
   --method read \
   --args '[[7074]]' \
   --kwargs '{"fields": ["name","credit","agreement_currency_id"]}'
 
 # All flags explicit (no config file)
-odoo-xml-rpc \
+odoo-connector \
   --url https://odoo.gurtam.team --db odoo \
   --username admin --password $PASS \
   --cert /tmp/crt/client.crt --key /tmp/crt/client.key \
@@ -88,20 +88,20 @@ Bypasses XML-RPC entirely — sends a raw HTTP request to any Odoo path. Respons
 
 ```bash
 # GET any endpoint (uses mTLS client from the active profile)
-odoo-xml-rpc http GET /web/health
+odoo-connector http GET /web/health
 
 # POST with a JSON body (Content-Type: application/json by default)
-odoo-xml-rpc http POST /web/dataset/call_kw \
+odoo-connector http POST /web/dataset/call_kw \
   --body '{"jsonrpc":"2.0","method":"call","id":1,"params":{"model":"res.partner","method":"search_read","args":[[]],"kwargs":{"fields":["id","name"],"limit":5}}}'
 
 # Custom Content-Type and extra headers
-odoo-xml-rpc http POST /some/form/endpoint \
+odoo-connector http POST /some/form/endpoint \
   --content-type "application/x-www-form-urlencoded" \
   --body "param1=value1&param2=value2" \
   --header "X-Custom-Token:abc123"
 
 # Multiple extra headers
-odoo-xml-rpc http GET /api/v2/resource \
+odoo-connector http GET /api/v2/resource \
   --header "Authorization:Bearer $TOKEN" \
   --header "Accept:application/json"
 ```
@@ -112,21 +112,21 @@ odoo-xml-rpc http GET /api/v2/resource \
 
 ```bash
 # GET a public endpoint using ext_url from the active config profile
-odoo-xml-rpc --ext http GET /api/v2/public/ping
+odoo-connector --ext http GET /api/v2/public/ping
 
 # POST to a public endpoint
-odoo-xml-rpc --ext http POST /api/v2/webhook \
+odoo-connector --ext http POST /api/v2/webhook \
   --body '{"event":"test"}'
 
 # Pass ext-url inline without a config file
-odoo-xml-rpc --ext-url https://ext-odoo.gurtam.team --ext \
+odoo-connector --ext-url https://ext-odoo.gurtam.team --ext \
   http GET /api/v2/public/status
 
 # Use a non-default profile that has ext_url configured
-odoo-xml-rpc --profile staging --ext http GET /api/v2/public/info
+odoo-connector --profile staging --ext http GET /api/v2/public/info
 
 # With extra headers (e.g. a shared secret for semi-public endpoints)
-odoo-xml-rpc --ext http GET /api/v2/internal/report \
+odoo-connector --ext http GET /api/v2/internal/report \
   --header "X-Api-Key:$EXT_KEY"
 ```
 
