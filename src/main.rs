@@ -97,11 +97,11 @@ fn save_session(config_path: Option<&PathBuf>, profile: &str, session_id: &str) 
 #[command(name = "odoo-mcp", version)]
 struct Cli {
     /// Path to YAML config file (default: ~/.config/odoo-mcp/config.yaml)
-    #[arg(long, env = "ODOO_CONFIG")]
+    #[arg(long, env = "ODOO_CONFIG", global = true)]
     config: Option<PathBuf>,
 
     /// Connection profile name from config file (uses `default:` key if omitted)
-    #[arg(long, env = "ODOO_PROFILE")]
+    #[arg(long, env = "ODOO_PROFILE", global = true)]
     profile: Option<String>,
 
     /// Odoo base URL, e.g. https://odoo.example.com
