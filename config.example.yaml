@@ -6,12 +6,16 @@ connections:
     db: odoo
     username: admin
     password: admin
+    # safe_mode: false   # Uncomment to allow execute-kw on this profile
 
   production:
     url: https://odoo.example.com
     db: odoo
     username: admin
     password: "your-api-key-or-password"
+    # safe_mode is true by default — execute-kw is blocked.
+    # To enable: odoo-mcp config set --profile production --safe-mode false
+
     # Alternative public URL for unauthenticated endpoints (ext-odoo)
     ext_url: https://ext-odoo.example.com
     # mTLS (optional)

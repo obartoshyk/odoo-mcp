@@ -71,7 +71,21 @@ connections:
     db: odoo
     username: admin
     password: admin
+    safe_mode: false   # allow execute-kw on dev
 ```
+
+### Connection config fields
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `url` | — | Odoo base URL |
+| `db` | `odoo` | Database name |
+| `username` | `admin` | Login |
+| `password` | — | Password or API key |
+| `ext_url` | — | Public URL for unauthenticated `--ext` requests |
+| `cert` | — | mTLS client certificate path |
+| `key` | — | mTLS private key path |
+| `safe_mode` | `true` | When `true`, `execute-kw` is blocked. Set to `false` to allow write operations. |
 
 ### Source config fields
 
@@ -125,6 +139,12 @@ odoo-mcp config set \
 
 # Update only some fields (others are preserved)
 odoo-mcp config set --profile production --password "new-key"
+
+# Enable execute-kw (unsafe mode) for a profile
+odoo-mcp config set --profile local --safe-mode false
+
+# Re-enable safe mode
+odoo-mcp config set --profile local --safe-mode true
 
 # Change the default profile
 odoo-mcp config default --profile local
@@ -200,6 +220,11 @@ odoo-mcp fields-get --model account.move \
 ```
 
 ### `execute-kw` — any model method
+
+> **Safe mode:** `execute-kw` is blocked by default. Enable with:
+> ```bash
+> odoo-mcp config set --profile <name> --safe-mode false
+> ```
 
 ```bash
 # Read specific fields of one record
@@ -463,7 +488,7 @@ odoo_fields_get(model="account.move", fields="partner_id,invoice_line_ids,amount
 
 #### `odoo_execute_kw`
 
-Call any method on an Odoo model.
+Call any method on an Odoo model. **Not available in safe mode** (hidden from `tools/list`). Enable with `odoo-mcp config set --profile <name> --safe-mode false`.
 
 | Argument | Required | Description |
 |----------|----------|-------------|
