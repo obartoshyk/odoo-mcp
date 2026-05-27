@@ -272,6 +272,29 @@ odoo-mcp http GET /report/pdf/account.report_invoice/961403 \
   -o /tmp/invoice.pdf
 ```
 
+### `print-report` — download report PDF
+
+Downloads a PDF report via the Odoo web session. Authenticates automatically and caches the session cookie per-profile in `~/.config/odoo-mcp/sessions/<profile>.txt`. On subsequent calls the cache is reused; if the session has expired, re-authentication is transparent.
+
+```bash
+# Single invoice
+odoo-mcp --profile sales print-report \
+  --report gt_billing.gt_invoice \
+  --ids 1068747 \
+  -o /tmp/invoice_1068747.pdf
+
+# Multiple records in one PDF
+odoo-mcp --profile sales print-report \
+  --report gt_billing.gt_invoice \
+  --ids 1068747,1068748,1068749
+
+# Default output name: <report_suffix>_<ids>.pdf in current directory
+# e.g. gt_invoice_1068747.pdf
+odoo-mcp --profile sales print-report --report gt_billing.gt_invoice --ids 1068747
+```
+
+Session cache: `~/.config/odoo-mcp/sessions/<profile>.txt` (plain session_id, auto-refreshed on expiry).
+
 ### `--ext` — unauthenticated public endpoints
 
 Switches base URL to `ext_url` from config and skips auth entirely.
@@ -606,7 +629,7 @@ odoo_execute_kw(model="gt.billing.order", method="action_confirm", args="[[42]]"
 | File | Purpose |
 |------|---------|
 | `src/lib.rs` | `OdooClient`: JSON-RPC auth/execute_kw, direct HTTP |
-| `src/main.rs` | CLI: `auth`, `search-read`, `execute-kw`, `http`, `serve`, `update-sources` |
+| `src/main.rs` | CLI: `auth`, `search-read`, `execute-kw`, `http`, `print-report`, `serve`, `update-sources` |
 | `src/mcp.rs` | MCP server: JSON-RPC 2.0 over stdio, tool dispatch |
 | `src/sources.rs` | Git source management (gitoxide), file walker, addon/model introspection |
 
