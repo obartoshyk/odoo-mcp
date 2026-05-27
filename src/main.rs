@@ -366,7 +366,13 @@ fn ensure_session(
     Ok(sid)
 }
 
-/// Verify bytes start with %PDF; bail with a preview of the response otherwise.
+/// True only if the response looks like an Odoo login redirect (HTML page).
+/// Used to decide whether a non-PDF response warrants a re-auth retry.
+fn is_login_redirect(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"<")
+}
+
+/// Verify bytes start with %PDF; bail with a response preview otherwise.
 fn require_pdf(bytes: Vec<u8>) -> Result<Vec<u8>> {
     if bytes.starts_with(b"%PDF") {
         return Ok(bytes);
@@ -375,7 +381,8 @@ fn require_pdf(bytes: Vec<u8>) -> Result<Vec<u8>> {
     bail!("Expected PDF but got:\n{preview}");
 }
 
-/// Download a report PDF with session cookie, re-authenticating once if the session expired.
+/// Download a report PDF with session cookie.
+/// Re-authenticates once only if the response looks like an HTML login redirect.
 fn download_report(
     odoo: &OdooClient,
     path: &str,
@@ -395,8 +402,11 @@ fn download_report(
     if bytes.starts_with(b"%PDF") {
         return Ok(bytes);
     }
+    if !is_login_redirect(&bytes) {
+        return require_pdf(bytes); // Not a session issue — fail immediately.
+    }
 
-    // Session was cached but expired — re-authenticate once
+    // Looks like a login redirect → session expired, re-authenticate once.
     let new_sid = odoo.web_authenticate(db, username, password)?;
     save_session(config_path, profile, &new_sid);
     require_pdf(fetch(&new_sid)?)
@@ -728,15 +738,20 @@ fn main() -> Result<()> {
                     .map(|e| e.eq_ignore_ascii_case("pdf"))
                     .unwrap_or(false);
                 let bytes = if is_pdf_ext && !bytes.starts_with(b"%PDF") && !cli.ext {
-                    let new_sid = odoo.web_authenticate(&db, &username, &password)?;
-                    save_session(cli.config.as_ref(), profile_name, &new_sid);
-                    for (k, v) in &mut extra {
-                        if k == "Cookie" { *v = format!("session_id={new_sid}"); }
+                    if is_login_redirect(&bytes) {
+                        // Session expired — re-authenticate once and retry.
+                        let new_sid = odoo.web_authenticate(&db, &username, &password)?;
+                        save_session(cli.config.as_ref(), profile_name, &new_sid);
+                        for (k, v) in &mut extra {
+                            if k == "Cookie" { *v = format!("session_id={new_sid}"); }
+                        }
+                        let retry = odoo.http_request_bytes(
+                            &method, &path, body.as_deref(), &content_type, &extra,
+                        )?;
+                        require_pdf(retry)?
+                    } else {
+                        require_pdf(bytes)? // Not a session issue — fail immediately.
                     }
-                    let retry = odoo.http_request_bytes(
-                        &method, &path, body.as_deref(), &content_type, &extra,
-                    )?;
-                    require_pdf(retry)?
                 } else if is_pdf_ext {
                     require_pdf(bytes)?
                 } else {
