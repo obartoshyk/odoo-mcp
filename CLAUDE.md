@@ -132,10 +132,57 @@ odoo-claude-mcp --ext http GET /api/v2/internal/report \
 
 Env vars: `ODOO_URL`, `ODOO_DB`, `ODOO_USERNAME`, `ODOO_PASSWORD`, `ODOO_CERT`, `ODOO_KEY`, `ODOO_PROFILE`, `ODOO_CONFIG`, `ODOO_EXT_URL`.
 
+### MCP server (`serve` subcommand)
+
+Starts a JSON-RPC 2.0 MCP server over stdio for use with Claude. Authenticates at startup, then exposes three tools: `odoo_search_read`, `odoo_execute_kw`, `odoo_http`.
+
+```bash
+# Start MCP server with the sales profile
+odoo-claude-mcp --profile sales serve
+
+# With ext-url (no auth, public endpoints only)
+odoo-claude-mcp --profile sales --ext serve
+```
+
+**Claude Desktop config** (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS, `%APPDATA%\Claude\claude_desktop_config.json` on Windows):
+
+```json
+{
+  "mcpServers": {
+    "odoo": {
+      "command": "odoo-claude-mcp",
+      "args": ["--profile", "sales", "serve"]
+    }
+  }
+}
+```
+
+**Claude Code config** (`.claude/settings.json` in the project or `~/.claude/settings.json` globally):
+
+```json
+{
+  "mcpServers": {
+    "odoo": {
+      "command": "odoo-claude-mcp",
+      "args": ["--profile", "sales", "serve"]
+    }
+  }
+}
+```
+
+**MCP tools exposed:**
+
+| Tool | Description |
+|------|-------------|
+| `odoo_search_read` | Search and read records (model, domain, fields, limit, offset, order) |
+| `odoo_execute_kw` | Call any model method (create, write, unlink, custom) |
+| `odoo_http` | Direct HTTP GET/POST to any Odoo endpoint |
+
 ## Architecture
 
 - `src/lib.rs` — `Value` enum (XML-RPC types), XML serialization/deserialization (via `roxmltree`), base64 codec, `OdooClient` struct (with `http_request()` for direct HTTP)
-- `src/main.rs` — CLI (`clap` derive) with subcommands: `auth`, `search-read`, `execute-kw`, `http`
+- `src/main.rs` — CLI (`clap` derive) with subcommands: `auth`, `search-read`, `execute-kw`, `http`, `serve`
+- `src/mcp.rs` — MCP server: JSON-RPC 2.0 over stdio, tool dispatch, protocol handshake
 
 XML-RPC protocol is implemented directly (no external xmlrpc crate). TLS via `rustls` (pure Rust, no system OpenSSL dependency).
 

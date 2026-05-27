@@ -1,3 +1,5 @@
+mod mcp;
+
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -149,6 +151,9 @@ enum Command {
         kwargs: String,
     },
 
+    /// Start MCP server (JSON-RPC over stdio) for use with Claude
+    Serve,
+
     /// Direct HTTP request to any Odoo endpoint (no XML-RPC wrapping)
     Http {
         /// HTTP method: GET, POST, PUT, PATCH, DELETE, HEAD
@@ -229,7 +234,7 @@ fn main() -> Result<()> {
         .unwrap_or_default();
 
     let is_http_cmd = matches!(&cli.command, Command::Http { .. });
-    // Skip auth for --ext mode and for direct HTTP calls.
+    // Skip auth for --ext mode and for direct HTTP calls; Serve always authenticates.
     let needs_auth = !cli.ext && !is_http_cmd;
 
     // Merge: CLI/env > config file.
@@ -267,6 +272,10 @@ fn main() -> Result<()> {
     };
 
     match cli.command {
+        Command::Serve => {
+            mcp::run_server(odoo)?;
+        }
+
         Command::Auth => {
             let out = serde_json::json!({
                 "uid": uid,
