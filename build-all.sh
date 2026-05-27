@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build odoo-xml-rpc for Linux, Windows, macOS from Linux.
+# Build odoo-connector for Linux, Windows, macOS from Linux.
 #
 # First-time setup:
 #   sudo apt install gcc-mingw-w64-x86-64   # Windows cross-linker
@@ -32,14 +32,14 @@ build() {
 }
 
 # Linux x86_64 (native)
-build x86_64-unknown-linux-gnu odoo-xml-rpc
+build x86_64-unknown-linux-gnu odoo-connector
 
 # Windows x86_64 (MinGW cross-compiler)
-build x86_64-pc-windows-gnu odoo-xml-rpc.exe
+build x86_64-pc-windows-gnu odoo-connector.exe
 
 # macOS Intel + Apple Silicon (via Zig)
-build x86_64-apple-darwin  odoo-xml-rpc true
-build aarch64-apple-darwin odoo-xml-rpc true
+build x86_64-apple-darwin  odoo-connector true
+build aarch64-apple-darwin odoo-connector true
 
 echo ""
 echo "Done. Artifacts in ./$DIST/:"
