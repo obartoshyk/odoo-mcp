@@ -311,6 +311,35 @@ fn build_http_client(cert: Option<&str>, key: Option<&str>) -> Result<reqwest::b
     builder.build().context("Failed to build HTTP client")
 }
 
+/// Extract binary bytes for --output:
+/// - string   → base64-decode
+/// - [single] → recurse into the one element
+/// - {datas}  → base64-decode the `datas` field
+/// - anything else → pretty-print as JSON text
+fn extract_binary(v: &Json) -> Result<Vec<u8>> {
+    use base64::Engine;
+    if let Some(b64) = v.as_str() {
+        return base64::engine::general_purpose::STANDARD
+            .decode(b64)
+            .context("Result is a string but not valid base64");
+    }
+    if let Some(arr) = v.as_array() {
+        if arr.len() == 1 {
+            return extract_binary(&arr[0]);
+        }
+    }
+    if let Some(obj) = v.as_object() {
+        if let Some(datas) = obj.get("datas") {
+            if let Some(b64) = datas.as_str() {
+                return base64::engine::general_purpose::STANDARD
+                    .decode(b64)
+                    .context("datas field is not valid base64");
+            }
+        }
+    }
+    Ok(serde_json::to_string_pretty(v)?.into_bytes())
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 fn main() -> Result<()> {
@@ -550,14 +579,7 @@ fn main() -> Result<()> {
             let result = odoo.execute_kw(&model, &method, args_val, kwargs_val)?;
 
             if let Some(out_path) = output {
-                let bytes = if let Some(b64) = result.as_str() {
-                    use base64::Engine;
-                    base64::engine::general_purpose::STANDARD
-                        .decode(b64)
-                        .with_context(|| "Result is a string but not valid base64")?
-                } else {
-                    serde_json::to_string_pretty(&result)?.into_bytes()
-                };
+                let bytes = extract_binary(&result)?;
                 std::fs::write(&out_path, &bytes)
                     .with_context(|| format!("Cannot write: {}", out_path.display()))?;
                 eprintln!("Wrote {} bytes → {}", bytes.len(), out_path.display());
