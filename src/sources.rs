@@ -133,12 +133,17 @@ fn is_model_definition(content: &str, model: &str) -> bool {
     let dq = format!("\"{model}\"");
     let sq = format!("'{model}'");
 
+    // Also match `_inherit = ["other", "model"]` list form:
+    // find any line containing `_inherit` that also contains the model name.
+    let inherit_list_match = content.lines().any(|line| {
+        line.contains("_inherit") && (line.contains(&dq) || line.contains(&sq))
+    });
+
     let references_model = content.contains(&format!("_name = {dq}"))
         || content.contains(&format!("_name = {sq}"))
         || content.contains(&format!("_inherit = {dq}"))
         || content.contains(&format!("_inherit = {sq}"))
-        || (content.contains("_inherit")
-            && (content.contains(&dq) || content.contains(&sq)));
+        || inherit_list_match;
 
     let is_model_class = content.contains("models.Model")
         || content.contains("models.TransientModel")
@@ -596,6 +601,11 @@ fn git_clone(origin: &str, path: &Path, branch: &str, src: &SourceConfig) -> Res
 
     let interrupt = AtomicBool::new(false);
     let overrides = auth_config_overrides(src);
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("Cannot create directory: {}", parent.display()))?;
+    }
 
     let mut prepare = gix::clone::PrepareFetch::new(
         origin,

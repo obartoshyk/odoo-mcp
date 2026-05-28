@@ -258,6 +258,39 @@ enum Command {
     /// Pull / clone all configured source repositories
     UpdateSources,
 
+    /// List all Odoo addons found in configured source trees
+    ListAddons,
+
+    /// Show structural overview of a specific addon (models, routes, data files)
+    AddonStructure {
+        /// Technical addon name (directory name), e.g. gt_billing
+        addon: String,
+    },
+
+    /// Show Python source of all files that define or inherit a model
+    ModelSource {
+        /// Model technical name, e.g. account.move
+        model: String,
+    },
+
+    /// Search for a string across all Python source files
+    SearchSource {
+        /// Case-sensitive substring to search for
+        query: String,
+
+        /// File path must contain this substring (e.g. gt_billing)
+        #[arg(long)]
+        path_filter: Option<String>,
+
+        /// Lines of context around each match
+        #[arg(long, default_value_t = 5)]
+        context: usize,
+
+        /// Maximum number of matches to return
+        #[arg(long, default_value_t = 30)]
+        max_matches: usize,
+    },
+
     /// Direct HTTP request to any Odoo endpoint (no XML-RPC wrapping)
     Http {
         /// HTTP method: GET, POST, PUT, PATCH, DELETE, HEAD
@@ -372,10 +405,32 @@ fn yaml_merge(
 }
 
 /// Merge a YAML string patch into a ConnectionConfig.
-fn merge_profile_yaml(base: &ConnectionConfig, patch_yaml: &str) -> Result<ConnectionConfig> {
+///
+/// The YAML may be either a flat ConnectionConfig:
+///   url: https://...
+///   db: mydb
+///
+/// Or wrapped in a profile key (e.g. from `config show`):
+///   sales:
+///     url: https://...
+///     db: mydb
+fn merge_profile_yaml(base: &ConnectionConfig, patch_yaml: &str, profile: &str) -> Result<ConnectionConfig> {
     let base_val  = serde_yaml::to_value(base).context("Failed to serialize base profile")?;
-    let patch_val = serde_yaml::from_str::<serde_yaml::Value>(patch_yaml)
+    let mut patch_val = serde_yaml::from_str::<serde_yaml::Value>(patch_yaml)
         .context("Invalid YAML patch")?;
+
+    // Unwrap profile key if the YAML is wrapped: { "sales": { ... } }
+    if let serde_yaml::Value::Mapping(ref mut m) = patch_val {
+        if m.len() == 1 {
+            let key = serde_yaml::Value::String(profile.to_string());
+            if let Some(inner) = m.get(&key).cloned() {
+                if matches!(inner, serde_yaml::Value::Mapping(_)) {
+                    patch_val = inner;
+                }
+            }
+        }
+    }
+
     let merged = yaml_merge(base_val, patch_val);
     serde_yaml::from_value(merged).context("Merged YAML does not match profile schema")
 }
@@ -565,7 +620,14 @@ fn main() -> Result<()> {
         .cloned()
         .unwrap_or_default();
 
-    let is_source_cmd  = matches!(&cli.command, Command::UpdateSources);
+    let is_source_cmd = matches!(
+        &cli.command,
+        Command::UpdateSources
+            | Command::ListAddons
+            | Command::AddonStructure { .. }
+            | Command::ModelSource { .. }
+            | Command::SearchSource { .. }
+    );
     let is_no_auth_cmd = matches!(
         &cli.command,
         Command::Init | Command::Config { .. }
@@ -575,10 +637,9 @@ fn main() -> Result<()> {
 
     // Merge: CLI/env > config file.
     let url = if cli.ext {
-        require(
-            resolve(cli.ext_url, cfg_conn.ext_url),
-            "ext-url",
-        )?
+        require(resolve(cli.ext_url, cfg_conn.ext_url), "ext-url")?
+    } else if is_source_cmd || is_no_auth_cmd {
+        resolve(cli.url, cfg_conn.url).unwrap_or_default()
     } else {
         require(resolve(cli.url, cfg_conn.url), "url")?
     };
@@ -689,10 +750,10 @@ fn main() -> Result<()> {
                     let mut conn = base;
                     if let Some(ref p) = file {
                         let text = read_file_or_stdin(p)?;
-                        conn = merge_profile_yaml(&conn, &text)?;
+                        conn = merge_profile_yaml(&conn, &text, &profile)?;
                     }
                     if let Some(ref y) = yaml {
-                        conn = merge_profile_yaml(&conn, y)?;
+                        conn = merge_profile_yaml(&conn, y, &profile)?;
                     }
                     if let Some(v) = password   { conn.password  = Some(v); }
                     if let Some(v) = safe_mode  { conn.safe_mode = Some(v); }
@@ -734,9 +795,25 @@ fn main() -> Result<()> {
             for (path, result) in sources::update_all(&sources) {
                 match result {
                     Ok(msg) => println!("ok  {msg}"),
-                    Err(e)  => eprintln!("err {path}: {e}"),
+                    Err(e)  => eprintln!("err {path}: {e:#}"),
                 }
             }
+        }
+
+        Command::ListAddons => {
+            println!("{}", sources::list_addons(&sources)?);
+        }
+
+        Command::AddonStructure { addon } => {
+            println!("{}", sources::addon_structure(&addon, &sources)?);
+        }
+
+        Command::ModelSource { model } => {
+            println!("{}", sources::find_model_source(&model, &sources)?);
+        }
+
+        Command::SearchSource { query, path_filter, context, max_matches } => {
+            println!("{}", sources::search_source(&query, path_filter.as_deref(), context, max_matches, &sources)?);
         }
 
         Command::Auth => {
