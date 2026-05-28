@@ -9,6 +9,7 @@ use odoo_mcp::OdooClient;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
 
+
 // ── Config file ───────────────────────────────────────────────────────────────
 
 #[derive(Deserialize, Serialize, Default)]
@@ -287,23 +288,44 @@ enum Command {
 enum ConfigCommand {
     /// List all connection profiles
     List,
-    /// Show full config with secrets masked
-    Show,
-    /// Create or update a connection profile
+    /// Show config with secrets masked (all profiles, or a single one with --profile)
+    Show {
+        /// Limit output to this profile
+        #[arg(long)]
+        profile: Option<String>,
+    },
+    /// Create or update a connection profile (YAML merge)
+    ///
+    /// Fields are merged: only keys present in the YAML input overwrite the profile.
+    /// Unspecified fields are preserved. Arrays (sources) are replaced entirely when present.
+    ///
+    /// Examples:
+    ///   odoo-mcp config set --profile sales --yaml 'url: https://odoo.example.com'
+    ///   odoo-mcp config set --profile sales -f profile.yaml --password mypass --default
     Set {
         /// Profile name to create or update
-        #[arg(long)] profile:   String,
-        #[arg(long)] url:       Option<String>,
-        #[arg(long)] db:        Option<String>,
-        #[arg(long)] username:  Option<String>,
-        #[arg(long)] password:  Option<String>,
-        #[arg(long)] ext_url:   Option<String>,
-        #[arg(long)] cert:      Option<String>,
-        #[arg(long)] key:       Option<String>,
-        /// Safe mode: true (default) blocks execute-kw; false allows it
-        #[arg(long)] safe_mode: Option<bool>,
+        #[arg(long)]
+        profile: String,
+
+        /// Inline YAML to merge into the profile, e.g. 'url: https://... \ndb: mydb'
+        #[arg(long, short = 'y', value_name = "YAML")]
+        yaml: Option<String>,
+
+        /// Path to a YAML file to merge into the profile (use - for stdin)
+        #[arg(long, short = 'f', value_name = "FILE")]
+        file: Option<String>,
+
+        /// Password or API key
+        #[arg(long)]
+        password: Option<String>,
+
+        /// Safe mode: true blocks execute-kw (default), false allows it
+        #[arg(long)]
+        safe_mode: Option<bool>,
+
         /// Make this the default profile
-        #[arg(long)] default:   bool,
+        #[arg(long)]
+        default: bool,
     },
     /// Remove a connection profile
     Remove {
@@ -329,6 +351,46 @@ fn require(value: Option<String>, name: &str) -> Result<String> {
             name.to_uppercase().replace('-', "_")
         )
     })
+}
+
+/// Shallow-merge two YAML mappings: patch keys overwrite base keys; base keys not in patch survive.
+/// Non-mapping values: patch wins entirely.
+fn yaml_merge(
+    base: serde_yaml::Value,
+    patch: serde_yaml::Value,
+) -> serde_yaml::Value {
+    use serde_yaml::Value;
+    match (base, patch) {
+        (Value::Mapping(mut b), Value::Mapping(p)) => {
+            for (k, v) in p {
+                b.insert(k, v);
+            }
+            Value::Mapping(b)
+        }
+        (_, p) => p,
+    }
+}
+
+/// Merge a YAML string patch into a ConnectionConfig.
+fn merge_profile_yaml(base: &ConnectionConfig, patch_yaml: &str) -> Result<ConnectionConfig> {
+    let base_val  = serde_yaml::to_value(base).context("Failed to serialize base profile")?;
+    let patch_val = serde_yaml::from_str::<serde_yaml::Value>(patch_yaml)
+        .context("Invalid YAML patch")?;
+    let merged = yaml_merge(base_val, patch_val);
+    serde_yaml::from_value(merged).context("Merged YAML does not match profile schema")
+}
+
+/// Read YAML text from a `--file` argument (supports `-` for stdin).
+fn read_file_or_stdin(path: &str) -> Result<String> {
+    if path == "-" {
+        use std::io::Read;
+        let mut buf = String::new();
+        std::io::stdin().read_to_string(&mut buf).context("Failed to read stdin")?;
+        Ok(buf)
+    } else {
+        std::fs::read_to_string(path)
+            .with_context(|| format!("Cannot read file: {path}"))
+    }
 }
 
 // ── HTTP client ───────────────────────────────────────────────────────────────
@@ -484,15 +546,15 @@ fn main() -> Result<()> {
     let cert = resolve(cli.cert, cfg_conn.cert);
     let key  = resolve(cli.key,  cfg_conn.key);
 
-    let (db, username, password) = if needs_auth {
+    let (db, username, password) = {
         let db       = resolve(cli.db,       cfg_conn.db)      .unwrap_or_else(|| "odoo".to_string());
         let username = resolve(cli.username, cfg_conn.username) .unwrap_or_else(|| "admin".to_string());
-        let password = require(resolve(cli.password, cfg_conn.password), "password")?;
-        (db, username, password)
-    } else {
-        let db       = resolve(cli.db,       cfg_conn.db)      .unwrap_or_default();
-        let username = resolve(cli.username, cfg_conn.username) .unwrap_or_default();
-        let password = resolve(cli.password, cfg_conn.password).unwrap_or_default();
+
+        let password = if needs_auth {
+            require(resolve(cli.password, cfg_conn.password), "password")?
+        } else {
+            resolve(cli.password, cfg_conn.password).unwrap_or_default()
+        };
         (db, username, password)
     };
 
@@ -564,7 +626,7 @@ fn main() -> Result<()> {
                         }
                     }
                 }
-                ConfigCommand::Show => {
+                ConfigCommand::Show { profile: show_profile } => {
                     let mut masked = cfg;
                     for conn in masked.connections.values_mut() {
                         if conn.password.is_some() { conn.password = Some("***".into()); }
@@ -573,18 +635,30 @@ fn main() -> Result<()> {
                             if src.token.is_some() { src.token = Some("***".into()); }
                         }
                     }
-                    print!("{}", serde_yaml::to_string(&masked).context("Serialization failed")?);
+                    if let Some(name) = show_profile {
+                        match masked.connections.get(&name) {
+                            Some(conn) => print!("{}", serde_yaml::to_string(conn).context("Serialization failed")?),
+                            None => anyhow::bail!("Profile '{name}' not found"),
+                        }
+                    } else {
+                        print!("{}", serde_yaml::to_string(&masked).context("Serialization failed")?);
+                    }
                 }
-                ConfigCommand::Set { profile, url, db, username, password, ext_url, cert, key, safe_mode, default } => {
-                    let conn = cfg.connections.entry(profile.clone()).or_default();
-                    if let Some(v) = url       { conn.url       = Some(v); }
-                    if let Some(v) = db        { conn.db        = Some(v); }
-                    if let Some(v) = username  { conn.username  = Some(v); }
-                    if let Some(v) = password  { conn.password  = Some(v); }
-                    if let Some(v) = ext_url   { conn.ext_url   = Some(v); }
-                    if let Some(v) = cert      { conn.cert      = Some(v); }
-                    if let Some(v) = key       { conn.key       = Some(v); }
-                    if let Some(v) = safe_mode { conn.safe_mode = Some(v); }
+                ConfigCommand::Set { profile, yaml, file, password, safe_mode, default } => {
+                    let base = cfg.connections.get(&profile).cloned().unwrap_or_default();
+
+                    let mut conn = base;
+                    if let Some(ref p) = file {
+                        let text = read_file_or_stdin(p)?;
+                        conn = merge_profile_yaml(&conn, &text)?;
+                    }
+                    if let Some(ref y) = yaml {
+                        conn = merge_profile_yaml(&conn, y)?;
+                    }
+                    if let Some(v) = password   { conn.password  = Some(v); }
+                    if let Some(v) = safe_mode  { conn.safe_mode = Some(v); }
+
+                    cfg.connections.insert(profile.clone(), conn);
                     if default { cfg.default = Some(profile.clone()); }
                     save_config(&cfg, Some(&path))?;
                     println!("Saved profile '{profile}' → {}", path.display());
@@ -611,7 +685,7 @@ fn main() -> Result<()> {
         }
 
         Command::Serve => {
-            mcp::run_server(odoo, sources, safe_mode)?;
+            mcp::run_server(odoo, sources, safe_mode, profile_name, &url)?;
         }
 
         Command::UpdateSources => {

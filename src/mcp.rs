@@ -8,7 +8,7 @@ use crate::sources::{self, SourceConfig, search_source, list_addons, addon_struc
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
-pub fn run_server(odoo: OdooClient, srcs: Vec<SourceConfig>, safe_mode: bool) -> Result<()> {
+pub fn run_server(odoo: OdooClient, srcs: Vec<SourceConfig>, safe_mode: bool, profile: &str, url: &str) -> Result<()> {
     // Auto-update sources marked with update_on_serve: true.
     let to_update: Vec<_> = srcs.iter().filter(|s| s.update_on_serve).collect();
     if !to_update.is_empty() {
@@ -25,8 +25,8 @@ pub fn run_server(odoo: OdooClient, srcs: Vec<SourceConfig>, safe_mode: bool) ->
 
     let stdin = io::stdin();
     let mut stdout = io::stdout();
-    // Move sources into the server loop so tools can access them.
     let sources = srcs;
+    let docs = server_docs(profile, url, safe_mode);
 
     for line in stdin.lock().lines() {
         let line = line?;
@@ -57,7 +57,7 @@ pub fn run_server(odoo: OdooClient, srcs: Vec<SourceConfig>, safe_mode: bool) ->
                 id,
                 json!({
                     "protocolVersion": "2024-11-05",
-                    "capabilities": {"tools": {}},
+                    "capabilities": {"tools": {}, "resources": {}},
                     "serverInfo": {
                         "name": "odoo-mcp",
                         "version": env!("CARGO_PKG_VERSION")
@@ -82,6 +82,30 @@ pub fn run_server(odoo: OdooClient, srcs: Vec<SourceConfig>, safe_mode: bool) ->
                             "isError": true
                         }),
                     ),
+                }
+            }
+
+            "resources/list" => ok_resp(id, json!({
+                "resources": [{
+                    "uri": "odoo-mcp://docs",
+                    "name": "Server Reference",
+                    "description": "Complete reference for all MCP tools with examples",
+                    "mimeType": "text/markdown"
+                }]
+            })),
+
+            "resources/read" => {
+                let uri = msg["params"]["uri"].as_str().unwrap_or("");
+                if uri == "odoo-mcp://docs" {
+                    ok_resp(id, json!({
+                        "contents": [{
+                            "uri": "odoo-mcp://docs",
+                            "mimeType": "text/markdown",
+                            "text": docs
+                        }]
+                    }))
+                } else {
+                    err_resp(id, -32002, &format!("Resource not found: {uri}"))
                 }
             }
 
@@ -496,4 +520,277 @@ fn tool_update_sources(sources: &[SourceConfig]) -> Result<String> {
         })
         .collect();
     Ok(lines.join("\n"))
+}
+
+// ── Embedded server documentation ─────────────────────────────────────────────
+
+fn server_docs(profile: &str, url: &str, safe_mode: bool) -> String {
+    let safe_note = if safe_mode {
+        "**Safe mode ON** — `odoo_execute_kw` is disabled (read-only access)."
+    } else {
+        "**Safe mode OFF** — `odoo_execute_kw` is enabled (write access allowed)."
+    };
+
+    format!(r#"# odoo-mcp MCP Server
+
+**Profile:** `{profile}`
+**Odoo URL:** {url}
+{safe_note}
+
+## Overview
+
+odoo-mcp provides AI tools to query and interact with an Odoo ERP instance.
+It exposes two categories of tools:
+
+- **Data tools** — query live Odoo data via XML-RPC
+- **Source tools** — read and search Python source code from local git checkouts
+
+Credentials are stored server-side and **never returned by any tool**.
+
+---
+
+## Typical workflow
+
+```
+# 1. Discover installed modules
+odoo_list_addons()
+
+# 2. Understand a specific module
+odoo_addon_structure("gt_billing")
+
+# 3. Read model fields and methods
+odoo_model_source("gt.billing.order")
+
+# 4. Find specific logic in the codebase
+odoo_search_source("def action_confirm", path_filter="gt_billing")
+
+# 5. Query live data
+odoo_search_read(
+  model="gt.billing.order",
+  domain='[["state","=","draft"]]',
+  fields="id,name,partner_id,amount_total",
+  limit=10,
+  order="id desc"
+)
+
+# 6. Call a method (unsafe mode only)
+odoo_execute_kw(model="gt.billing.order", method="action_confirm", args="[[42]]")
+```
+
+---
+
+## Data tools
+
+### odoo_search_read
+Search and read records from any Odoo model. Returns a JSON array.
+
+| Parameter | Required | Default | Description |
+|-----------|----------|---------|-------------|
+| `model` | yes | — | Model technical name, e.g. `account.move` |
+| `domain` | no | `[]` | JSON domain, e.g. `[["state","=","posted"]]` |
+| `fields` | no | `id,name` | Comma-separated field names |
+| `limit` | no | all | Max records to return |
+| `offset` | no | `0` | Records to skip (pagination) |
+| `order` | no | — | Sort, e.g. `id desc` |
+
+```
+odoo_search_read(
+  model="account.move",
+  domain='[["move_type","=","out_invoice"],["payment_state","=","not_paid"]]',
+  fields="id,name,partner_id,amount_total,invoice_date",
+  limit=20,
+  order="id desc"
+)
+```
+
+---
+
+### odoo_search
+Return record IDs matching a domain. Lighter than `odoo_search_read` when only IDs are needed.
+
+| Parameter | Required | Default | Description |
+|-----------|----------|---------|-------------|
+| `model` | yes | — | Model technical name |
+| `domain` | no | `[]` | JSON domain |
+| `limit` | no | all | Max IDs |
+| `offset` | no | `0` | Records to skip |
+| `order` | no | — | Sort order |
+
+```
+odoo_search(model="res.partner", domain='[["is_company","=",true]]', limit=50)
+```
+
+---
+
+### odoo_search_count
+Return the count of records matching a domain.
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `model` | yes | Model technical name |
+| `domain` | no | JSON domain (default: `[]`) |
+
+```
+odoo_search_count(model="account.move", domain='[["state","=","posted"]]')
+```
+
+---
+
+### odoo_read
+Read specific records by IDs. Use when you already have IDs.
+
+| Parameter | Required | Default | Description |
+|-----------|----------|---------|-------------|
+| `model` | yes | — | Model technical name |
+| `ids` | yes | — | JSON array of IDs, e.g. `[1,2,3]` |
+| `fields` | no | `id,name` | Comma-separated field names |
+
+```
+odoo_read(model="account.move", ids="[1070023,1070024]", fields="id,name,amount_total,state")
+```
+
+---
+
+### odoo_fields_get
+Return field definitions for a model: type, label, required, readonly, relation target.
+**Use this before building queries** to discover available field names.
+
+| Parameter | Required | Default | Description |
+|-----------|----------|---------|-------------|
+| `model` | yes | — | Model technical name |
+| `fields` | no | all | Comma-separated field names to filter |
+| `attributes` | no | `string,type,required,readonly,relation` | Attributes to include |
+
+```
+# Discover all fields
+odoo_fields_get(model="account.move")
+
+# Check specific fields
+odoo_fields_get(model="account.move", fields="partner_id,invoice_line_ids,amount_total")
+```
+
+---
+
+### odoo_execute_kw
+Call any method on an Odoo model. **Disabled in safe mode.**
+
+| Parameter | Required | Default | Description |
+|-----------|----------|---------|-------------|
+| `model` | yes | — | Model technical name |
+| `method` | yes | — | Method name, e.g. `write`, `create`, `action_post` |
+| `args` | no | `[]` | Positional args as JSON array |
+| `kwargs` | no | `{{}}` | Keyword args as JSON object |
+
+```
+# Post an invoice
+odoo_execute_kw(model="account.move", method="action_post", args="[[1070023]]")
+
+# Create a partner
+odoo_execute_kw(
+  model="res.partner",
+  method="create",
+  args='[{{"name":"Test","email":"test@example.com"}}]'
+)
+```
+
+---
+
+### odoo_http
+Direct HTTP request to any Odoo endpoint, bypassing XML-RPC.
+Useful for custom controllers, health checks, and REST APIs.
+
+| Parameter | Required | Default | Description |
+|-----------|----------|---------|-------------|
+| `path` | yes | — | Path on the Odoo server, e.g. `/web/health` |
+| `method` | no | `GET` | HTTP method |
+| `body` | no | — | Request body string |
+| `content_type` | no | `application/json` | Content-Type header |
+
+```
+odoo_http(path="/web/health")
+odoo_http(method="POST", path="/api/v2/invoices", body='{{"partner_id":123}}')
+```
+
+---
+
+## Source code tools
+
+These tools read Python source files from local git checkouts configured in the profile.
+No Odoo API calls are made.
+
+### odoo_list_addons
+List all Odoo addons found across all configured source trees.
+Returns name, version, summary, dependencies, and path for each addon.
+**Start here** to understand the overall application structure.
+
+```
+odoo_list_addons()
+```
+
+---
+
+### odoo_addon_structure
+Structural overview of a specific addon: models defined, models extended,
+HTTP routes, data files, security rules.
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `addon` | yes | Technical addon name (directory name), e.g. `gt_billing` |
+
+```
+odoo_addon_structure("gt_billing")
+odoo_addon_structure("account")
+```
+
+---
+
+### odoo_model_source
+Return the full Python source of all files that define or inherit a model.
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `model` | yes | Model technical name, e.g. `account.move` |
+
+```
+odoo_model_source("gt.billing.order")
+odoo_model_source("account.move")
+```
+
+---
+
+### odoo_search_source
+Search for any string across all Python source files.
+Use to find business logic, methods, field usages, routes, cron jobs.
+
+| Parameter | Required | Default | Description |
+|-----------|----------|---------|-------------|
+| `query` | yes | — | Case-sensitive substring to find |
+| `path_filter` | no | — | File path must contain this substring |
+| `context` | no | `5` | Lines of context around each match |
+| `max_matches` | no | `30` | Result limit |
+
+```
+# Find where a method is defined
+odoo_search_source("def action_post", path_filter="gt_")
+
+# Find all HTTP routes in an addon
+odoo_search_source("@http.route", path_filter="gt_billing")
+
+# Find all cron definitions
+odoo_search_source("ir.cron", path_filter="gt_")
+
+# Trace a field across the codebase
+odoo_search_source("agreement_currency_id", context=3)
+```
+
+---
+
+### odoo_update_sources
+Pull or clone all configured source repos (fetch + hard reset to origin branch).
+Call this when you need fresh source code.
+
+```
+odoo_update_sources()
+```
+"#)
 }

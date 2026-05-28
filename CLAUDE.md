@@ -117,7 +117,40 @@ odoo-mcp init
 
 ### `config` — manage connection profiles
 
-All subcommands read/write the config file. Passwords and keys are never shown in plain text.
+All subcommands read/write the config file. Passwords are never stored in `config.yaml`.
+
+#### `config set` — create or update a profile (declarative YAML merge)
+
+`config set` accepts a YAML patch: only the fields you provide overwrite the profile; everything else is preserved. The YAML mirrors the structure of a single connection entry from `config.yaml`.
+
+```bash
+# Create a profile from inline YAML
+odoo-mcp config set --profile sales \
+  --yaml 'url: https://odoo.example.com
+db: gurtam
+username: admin@example.com
+password: secret'
+
+# Load profile from a file, make default
+odoo-mcp config set --profile sales -f profile.yaml --default
+
+# Patch a single field
+odoo-mcp config set --profile sales --yaml 'url: https://new.odoo.example.com'
+
+# Set password via flag (equivalent to --yaml 'password: ...')
+odoo-mcp config set --profile sales --password "my-api-key"
+
+# Read stdin (useful in scripts)
+echo 'db: mydb' | odoo-mcp config set --profile sales -f -
+
+# Enable / disable execute-kw
+odoo-mcp config set --profile local --safe-mode false
+odoo-mcp config set --profile local --safe-mode true
+```
+
+> All `ConnectionConfig` fields go in the YAML (`url`, `db`, `username`, `password`, `ext_url`, `cert`, `key`, `sources`, …). `--password`, `--safe-mode`, and `--default` are convenience flags for the most common one-liner changes.
+
+#### Other config subcommands
 
 ```bash
 # List all profiles
@@ -128,32 +161,12 @@ odoo-mcp config list
 # Show full config with secrets masked
 odoo-mcp config show
 
-# Create or update a profile
-odoo-mcp config set \
-  --profile production \
-  --url https://odoo.example.com \
-  --db mydb \
-  --username admin \
-  --password "secret" \
-  --default          # also make it the default profile
-
-# Update only some fields (others are preserved)
-odoo-mcp config set --profile production --password "new-key"
-
-# Enable execute-kw (unsafe mode) for a profile
-odoo-mcp config set --profile local --safe-mode false
-
-# Re-enable safe mode
-odoo-mcp config set --profile local --safe-mode true
-
 # Change the default profile
 odoo-mcp config default --profile local
 
 # Remove a profile
 odoo-mcp config remove --profile old
 ```
-
-> **Note:** `sources` (git trees) are not managed via `config set` — add them manually in the YAML file, the structure is too flexible for flags.
 
 ---
 
@@ -353,7 +366,11 @@ Env vars: `ODOO_URL`, `ODOO_DB`, `ODOO_USERNAME`, `ODOO_PASSWORD`, `ODOO_CERT`, 
 
 ## MCP server (`serve`)
 
-Starts a JSON-RPC 2.0 MCP server over **stdio**. At startup: authenticates to Odoo, pulls sources with `update_on_serve: true`, then waits for tool calls from Claude.
+Starts a JSON-RPC 2.0 MCP server over **stdio**. At startup: authenticates to Odoo, pulls sources with `update_on_serve: true`, then waits for requests from Claude.
+
+Capabilities exposed:
+- **`tools`** — all Odoo data and source-code tools (see below)
+- **`resources`** — one resource: `odoo-mcp://docs` (full tool reference, embedded in the binary)
 
 ```bash
 odoo-mcp --profile sales serve

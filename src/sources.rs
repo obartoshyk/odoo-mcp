@@ -575,9 +575,7 @@ fn auth_config_overrides(src: &SourceConfig) -> Vec<String> {
         ));
     }
     if let Some(token) = &src.token {
-        overrides.push(format!(
-            "http.extraHeader=Authorization: Bearer {token}"
-        ));
+        overrides.push(format!("http.extraHeader=Authorization: Bearer {token}"));
     }
     overrides
 }
