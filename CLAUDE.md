@@ -49,19 +49,17 @@ connections:
     # Git source trees for odoo_model_source / odoo_search_source MCP tools.
     # Sources are per-profile: different profiles can point to different branches.
     sources:
-      - path: /home/user/projects/odoo/git/odoo/addons
-        origin: https://github.com/odoo/odoo.git
+      # path is optional — auto-derived as <config_dir>/sources/<profile>/<repo-name>
+      - origin: https://github.com/odoo/odoo.git
         branch: "16.0"
         update_on_serve: false      # heavy; update manually
 
-      - path: /home/user/projects/odoo/addons/gt
-        origin: git@github.com:your-org/odoo-addons.git
+      - origin: git@github.com:your-org/odoo-addons.git
         branch: main
         ssh_key: /home/user/.ssh/id_ed25519
         update_on_serve: true       # pull on every `serve` start
 
-      - path: /home/user/projects/odoo/addons/oca
-        origin: https://github.com/OCA/account-financial-tools.git
+      - origin: https://github.com/OCA/account-financial-tools.git
         branch: "16.0"
         # token: ghp_xxxx           # GitHub PAT for private HTTPS repos
         update_on_serve: false
@@ -91,9 +89,9 @@ connections:
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `path` | — | Local directory (will be created on clone) |
-| `origin` | — | Git remote URL (SSH or HTTPS); required for auto-clone |
+| `origin` | — | Git remote URL (SSH or HTTPS) |
 | `branch` | `main` | Branch to track |
+| `path` | auto | Local directory. If omitted, auto-derived as `<config_dir>/sources/<profile>/<repo-name>` |
 | `ssh_key` | — | Path to SSH private key |
 | `token` | — | Bearer token for HTTPS auth (GitHub PAT etc.) |
 | `update_on_serve` | `false` | Pull automatically when `serve` starts |

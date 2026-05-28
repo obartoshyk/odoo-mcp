@@ -380,6 +380,45 @@ fn merge_profile_yaml(base: &ConnectionConfig, patch_yaml: &str) -> Result<Conne
     serde_yaml::from_value(merged).context("Merged YAML does not match profile schema")
 }
 
+/// Derive a directory name from a git origin URL.
+/// `https://github.com/odoo/odoo.git` → `odoo`
+/// `git@github.com:org/my-repo.git`   → `my-repo`
+fn repo_slug(origin: &str) -> String {
+    origin
+        .trim_end_matches('/')
+        .rsplit(|c| c == '/' || c == ':')
+        .next()
+        .unwrap_or(origin)
+        .trim_end_matches(".git")
+        .to_string()
+}
+
+/// Fill in `path` for any source that doesn't have one.
+/// Auto-derived path: `<config_dir>/sources/<profile>/<repo-slug>`
+fn resolve_source_paths(
+    sources: Vec<sources::SourceConfig>,
+    config_path: Option<&PathBuf>,
+    profile: &str,
+) -> Vec<sources::SourceConfig> {
+    let base = config_path
+        .and_then(|p| p.parent())
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| default_config_path().parent().unwrap().to_path_buf())
+        .join("sources")
+        .join(profile);
+
+    sources
+        .into_iter()
+        .map(|mut s| {
+            if s.path.is_none() {
+                let slug = s.origin.as_deref().map(repo_slug).unwrap_or_else(|| "unknown".into());
+                s.path = Some(base.join(slug).to_string_lossy().into_owned());
+            }
+            s
+        })
+        .collect()
+}
+
 /// Read YAML text from a `--file` argument (supports `-` for stdin).
 fn read_file_or_stdin(path: &str) -> Result<String> {
     if path == "-" {
@@ -559,7 +598,7 @@ fn main() -> Result<()> {
     };
 
     let safe_mode = cfg_conn.safe_mode.unwrap_or(true);
-    let sources = cfg_conn.sources.clone();
+    let sources = resolve_source_paths(cfg_conn.sources.clone(), cli.config.as_ref(), profile_name);
     let http = build_http_client(cert.as_deref(), key.as_deref())?;
     let mut odoo = OdooClient::new(&url, &db, &password, http);
 

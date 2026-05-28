@@ -16,7 +16,7 @@ pub fn run_server(odoo: OdooClient, srcs: Vec<SourceConfig>, safe_mode: bool, pr
         for src in &to_update {
             match sources::update_source(src) {
                 Ok(msg) => eprintln!("  ok  {msg}"),
-                Err(e)  => eprintln!("  err {}: {e}", src.path),
+                Err(e)  => eprintln!("  err {}: {e}", src.resolved_path()),
             }
         }
     }

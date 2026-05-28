@@ -8,7 +8,9 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize, Serialize, Default, Clone)]
 pub struct SourceConfig {
-    pub path: String,
+    /// Local path to the git checkout. If omitted, auto-derived as
+    /// `<config_dir>/sources/<profile>/<repo-name>` from the origin URL.
+    #[serde(skip_serializing_if = "Option::is_none")] pub path:            Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")] pub origin:          Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")] pub branch:          Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")] pub ssh_key:         Option<String>,
@@ -17,22 +19,30 @@ pub struct SourceConfig {
     pub update_on_serve: bool,
 }
 
+impl SourceConfig {
+    /// Return the resolved local path. Always set after `resolve_source_paths` has been called.
+    pub fn resolved_path(&self) -> &str {
+        self.path.as_deref().unwrap_or("")
+    }
+}
+
 // ── Update ────────────────────────────────────────────────────────────────────
 
 /// Pull or clone a single source. Returns a human-readable status line.
 pub fn update_source(src: &SourceConfig) -> Result<String> {
-    let path = Path::new(&src.path);
+    let path = Path::new(src.resolved_path());
     let branch = src.branch.as_deref().unwrap_or("main");
 
+    let rp = src.resolved_path();
     if path.join(".git").exists() {
         git_fetch_reset(path, branch, src)?;
-        Ok(format!("{} (reset to origin/{branch})", src.path))
+        Ok(format!("{rp} (reset to origin/{branch})"))
     } else if let Some(origin) = &src.origin {
         git_clone(origin, path, branch, src)
             .with_context(|| format!("git clone {} failed", origin))?;
-        Ok(format!("Cloned {} → {}", origin, src.path))
+        Ok(format!("Cloned {} → {rp}", origin))
     } else {
-        bail!("{}: not a git repo and no origin configured", src.path)
+        bail!("{rp}: not a git repo and no origin configured")
     }
 }
 
@@ -40,7 +50,7 @@ pub fn update_source(src: &SourceConfig) -> Result<String> {
 pub fn update_all(sources: &[SourceConfig]) -> Vec<(String, Result<String>)> {
     sources
         .iter()
-        .map(|s| (s.path.clone(), update_source(s)))
+        .map(|s| (s.resolved_path().to_string(), update_source(s)))
         .collect()
 }
 
@@ -72,7 +82,7 @@ fn walk_py_files(dir: &Path, out: &mut Vec<PathBuf>) {
 fn collect_py_files(sources: &[SourceConfig]) -> Vec<PathBuf> {
     let mut files = Vec::new();
     for src in sources {
-        walk_py_files(Path::new(&src.path), &mut files);
+        walk_py_files(Path::new(src.resolved_path()), &mut files);
     }
     files
 }
@@ -228,7 +238,7 @@ pub fn search_source(
 fn find_manifests(sources: &[SourceConfig]) -> Vec<PathBuf> {
     let mut out = Vec::new();
     for src in sources {
-        find_manifests_in(Path::new(&src.path), &mut out);
+        find_manifests_in(Path::new(src.resolved_path()), &mut out);
     }
     out
 }
