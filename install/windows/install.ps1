@@ -52,7 +52,7 @@ if (-not $PROFILE) { $PROFILE = "sales" }
 
 $ODOO_URL = ""
 while (-not $ODOO_URL) {
-    $ODOO_URL = Ask "Odoo URL (e.g. https://odoo.gurtam.team)"
+    $ODOO_URL = Ask "Odoo URL (e.g. https://odoo.example.com)"
     if (-not $ODOO_URL) { Write-Warn "URL is required." }
 }
 
@@ -69,7 +69,7 @@ $secPass = AskSecret "Password or API key"
 $ODOO_PASS = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
     [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secPass))
 
-$ODOO_EXT_URL = Ask "External (public) URL, e.g. https://ext-odoo.gurtam.team (leave blank to skip)"
+$ODOO_EXT_URL = Ask "External (public) URL, e.g. https://ext-odoo.example.com (leave blank to skip)"
 
 $makeDefault = Ask "Make '$PROFILE' the default profile? [Y/n]"
 $makeDefault = if (-not $makeDefault) { "Y" } else { $makeDefault }

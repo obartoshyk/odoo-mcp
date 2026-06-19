@@ -75,7 +75,7 @@ prompt "Profile name (default: sales): "
 read -r PROFILE <&3
 PROFILE="${PROFILE:-sales}"
 
-prompt "Odoo URL (e.g. https://odoo.gurtam.team): "
+prompt "Odoo URL (e.g. https://odoo.example.com): "
 read -r ODOO_URL <&3
 while [ -z "$ODOO_URL" ]; do
     warn "URL is required."
@@ -102,7 +102,7 @@ while [ -z "$ODOO_PASS" ]; do
     echo ""
 done
 
-prompt "External (public) URL for unauthenticated endpoints, e.g. https://ext-odoo.gurtam.team (leave blank to skip): "
+prompt "External (public) URL for unauthenticated endpoints, e.g. https://ext-odoo.example.com (leave blank to skip): "
 read -r ODOO_EXT_URL <&3
 
 prompt "Make '$PROFILE' the default profile? [Y/n]: "
