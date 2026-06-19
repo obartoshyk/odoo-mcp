@@ -16,9 +16,26 @@ Odoo CLI + MCP server in a single binary. Query Odoo from the terminal or expose
 
 ## Install
 
+### One-line installer (recommended)
+
+The installer downloads the binary, adds it to PATH, configures a connection profile, and optionally registers the MCP server with Claude Desktop.
+
+**macOS:**
+```bash
+curl -fsSL https://raw.githubusercontent.com/obartoshyk/odoo-mcp/master/install/mac/install.sh | bash
+```
+
+**Linux (x86_64):**
+```bash
+curl -fsSL https://raw.githubusercontent.com/obartoshyk/odoo-mcp/master/install/linux/install.sh | bash
+```
+
+**Windows:**  
+Download [`install/windows/install.bat`](https://github.com/obartoshyk/odoo-mcp/raw/master/install/windows/install.bat) and [`install/windows/install.ps1`](https://github.com/obartoshyk/odoo-mcp/raw/master/install/windows/install.ps1) into the same folder, then double-click `install.bat`.
+
 ### Pre-built binaries
 
-Download from [Releases](https://github.com/obartoshyk/odoo-mcp/releases) for Linux x86_64, macOS (Intel / Apple Silicon), or Windows.
+Download manually from [Releases](https://github.com/obartoshyk/odoo-mcp/releases) for Linux x86_64, macOS (Intel / Apple Silicon), or Windows.
 
 ### From source
 
