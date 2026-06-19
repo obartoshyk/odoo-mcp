@@ -62,6 +62,8 @@ if ! echo "$PATH" | grep -q "$INSTALL_DIR"; then
 fi
 
 # ── 4. collect connection details ────────────────────────────────────────────
+[ -t 0 ] || exec < /dev/tty
+
 echo ""
 echo -e "${BOLD}Connection setup${NC}"
 echo "────────────────────────────────────────"
