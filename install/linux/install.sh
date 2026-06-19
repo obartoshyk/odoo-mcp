@@ -43,6 +43,16 @@ curl -fsSL "$LATEST_URL" -o "$INSTALL_DIR/odoo-mcp"
 chmod +x "$INSTALL_DIR/odoo-mcp"
 success "Installed to $INSTALL_DIR/odoo-mcp"
 
+# Smoke-test: check the binary actually runs on this system.
+if ! "$INSTALL_DIR/odoo-mcp" --version >/dev/null 2>&1; then
+    echo -e "${RED}Binary failed to run. Likely a glibc version mismatch:${NC}"
+    "$INSTALL_DIR/odoo-mcp" --version 2>&1 || true
+    echo ""
+    echo "Your system glibc: $(ldd --version 2>&1 | head -1)"
+    echo "Minimum required:  glibc 2.35 (Ubuntu 22.04 or newer)"
+    exit 1
+fi
+
 # ── 3. ensure $INSTALL_DIR is in PATH ───────────────────────────────────────
 SHELL_RC="$HOME/.bashrc"
 [ "$(basename "$SHELL")" = "zsh" ] && SHELL_RC="$HOME/.zshrc"
