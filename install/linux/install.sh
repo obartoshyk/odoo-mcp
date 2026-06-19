@@ -55,49 +55,52 @@ if ! echo "$PATH" | grep -q "$INSTALL_DIR"; then
 fi
 
 # ── 4. collect connection details ────────────────────────────────────────────
-[ -t 0 ] || exec < /dev/tty
+# Open /dev/tty on fd 3 so reads work even when stdin is a curl pipe.
+exec 3</dev/tty
 
 echo ""
 echo -e "${BOLD}Connection setup${NC}"
 echo "────────────────────────────────────────"
 
 prompt "Profile name (default: sales): "
-read -r PROFILE
+read -r PROFILE <&3
 PROFILE="${PROFILE:-sales}"
 
 prompt "Odoo URL (e.g. https://odoo.gurtam.team): "
-read -r ODOO_URL
+read -r ODOO_URL <&3
 while [ -z "$ODOO_URL" ]; do
     warn "URL is required."
-    read -r ODOO_URL
+    read -r ODOO_URL <&3
 done
 
 prompt "Database name (default: odoo): "
-read -r ODOO_DB
+read -r ODOO_DB <&3
 ODOO_DB="${ODOO_DB:-odoo}"
 
 prompt "Username / email: "
-read -r ODOO_USER
+read -r ODOO_USER <&3
 while [ -z "$ODOO_USER" ]; do
     warn "Username is required."
-    read -r ODOO_USER
+    read -r ODOO_USER <&3
 done
 
 prompt "Password or API key: "
-read -rs ODOO_PASS
+read -rs ODOO_PASS <&3
 echo ""
 while [ -z "$ODOO_PASS" ]; do
     warn "Password is required."
-    read -rs ODOO_PASS
+    read -rs ODOO_PASS <&3
     echo ""
 done
 
 prompt "External (public) URL, e.g. https://ext-odoo.gurtam.team (leave blank to skip): "
-read -r ODOO_EXT_URL
+read -r ODOO_EXT_URL <&3
 
 prompt "Make '$PROFILE' the default profile? [Y/n]: "
-read -r MAKE_DEFAULT
+read -r MAKE_DEFAULT <&3
 MAKE_DEFAULT="${MAKE_DEFAULT:-Y}"
+
+exec 3<&-
 
 # ── 5. write config ──────────────────────────────────────────────────────────
 info "Writing config..."
@@ -132,7 +135,7 @@ echo "────────────────────────�
 if [ ! -f "$CLAUDE_CONFIG" ]; then
     prompt "Claude Desktop config not found at $CLAUDE_CONFIG"
     prompt "Create it? [Y/n]: "
-    read -r CREATE_CLAUDE
+    read -r CREATE_CLAUDE </dev/tty
     CREATE_CLAUDE="${CREATE_CLAUDE:-Y}"
     if [[ "$CREATE_CLAUDE" =~ ^[Yy] ]]; then
         mkdir -p "$(dirname "$CLAUDE_CONFIG")"
@@ -145,7 +148,7 @@ if [ -f "$CLAUDE_CONFIG" ]; then
         warn "odoo-mcp already present in Claude Desktop config — skipping."
     else
         prompt "Add odoo-mcp to Claude Desktop? [Y/n]: "
-        read -r ADD_CLAUDE
+        read -r ADD_CLAUDE </dev/tty
         ADD_CLAUDE="${ADD_CLAUDE:-Y}"
         if [[ "$ADD_CLAUDE" =~ ^[Yy] ]]; then
             python3 - <<PYEOF
