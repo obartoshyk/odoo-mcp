@@ -21,8 +21,6 @@ pub fn run_server(odoo: OdooClient, srcs: Vec<SourceConfig>, safe_mode: bool, pr
         }
     }
 
-    eprintln!("odoo-mcp: MCP server ready");
-
     let stdin = io::stdin();
     let mut stdout = io::stdout();
     let sources = srcs;
